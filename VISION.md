@@ -73,11 +73,12 @@ It carries whatever kinds the store holds, and knows none of them.
 
 **Not a keeper of watchers.**\
 It holds no record of who follows beyond the streams open now.\
+When the call carrying a follow ends, for any reason, the follow closes.\
 A watcher that leaves is forgotten, and resumes from its own position.
 
 **Not a replicator.**\
 It does not copy one store into another or merge several.\
-One host serves one store.
+One host serves one store, and a caller names the host it means, so another host claiming the same store cannot quietly answer in its place.
 
 **Not a user interface.**\
 It offers a client for application logic.\
