@@ -117,6 +117,6 @@ Its host half and client half are halves of one duty, not separate components.
 - `opcall`: `honest-call-ending`, `caller-chosen-bound`, `answer-in-parts`, `cancel-invocation`, `invocation-identity`, `request-correlation`, `operation-descriptions`, `declared-shape-validation`, `call-refusal`, `serve-named-operations`, `peer-identity-evidence`, `advertiser-instance-select`
 
 **Composed-by:** nothing yet.\
-zorg is the first consumer.
+Its first consumer is zorg.
 
 The registry's edge vocabulary has no edge for one component using another's contract without containing it; see the note in opcall's entry.
