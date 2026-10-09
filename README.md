@@ -1,4 +1,4 @@
-# entityapi
+# entity-api
 
 Make an entity store reachable by name, so a remote caller can rely on exactly what a local one can.
 

@@ -1,7 +1,7 @@
 ---
 id: unminted
 category: component
-title: entityapi - an entity store reached by name, with its guarantees intact
+title: entity-api - an entity store reached by name, with its guarantees intact
 status: draft
 hydrate-when: An application must use an entity store it does not host, and must not lose the store's guarantees across the network
 sovereignty: internal
@@ -9,9 +9,9 @@ supersedes: []
 related: [C0, A3]
 ---
 
-# entityapi
+# entity-api
 
-The contract of record for entityapi: what a consumer can depend on, written before any consumer's architecture so that it states the whole offer.\
+The contract of record for entity-api: what a consumer can depend on, written before any consumer's architecture so that it states the whole offer.\
 It also carries the fields of a mission-kit registry entry, and that entry is generated from this file when the component is filed, never written as a second copy.\
 The registry id is unminted on purpose; one is minted only when the entry is admitted to the registry.
 
@@ -33,26 +33,26 @@ The trait column names any trait a system takes on by using the capability.
 
 | Capability | Relation | Requires | What a consumer can depend on | Trait |
 |---|---|---|---|---|
-| `serve-store-by-name` | provides | `opcall:serve-named-operations`, `opcall:operation-descriptions`, `opcall:declared-shape-validation`, `opcall:call-refusal` | A host half serves one store's operations as named operations, under a name the application chooses. | none |
-| `local-like-client` | provides | `opcall:honest-call-ending`, `opcall:caller-chosen-bound`, `opcall:invocation-identity`, `opcall:request-correlation` | A client half offers the store's operations to application logic as if the store were local. | none |
-| `follow-closes-with-call` | provides | `opcall:answer-in-parts`, `opcall:cancel-invocation` | A remote follow ends only when the call carrying it ends - a caller ends it by cancelling that call - and the watcher resumes from its own position. | none |
-| `host-named-writer` | provides | `opcall:peer-identity-evidence` | On the host half, the writer recorded for each remote change is the one the application names from the caller's evidence; a writer the client claims is never recorded. | none |
-| `ask-application-policy` | provides | `opcall:peer-identity-evidence` | Before each operation the host asks the application whether the caller may act; it never decides. | none |
+| `serve-store-by-name` | provides | `operation-call:serve-named-operations`, `operation-call:operation-descriptions`, `operation-call:declared-shape-validation`, `operation-call:call-refusal` | A host half serves one store's operations as named operations, under a name the application chooses. | none |
+| `local-like-client` | provides | `operation-call:honest-call-ending`, `operation-call:caller-chosen-bound`, `operation-call:invocation-identity`, `operation-call:request-correlation` | A client half offers the store's operations to application logic as if the store were local. | none |
+| `follow-closes-with-call` | provides | `operation-call:answer-in-parts`, `operation-call:cancel-invocation` | A remote follow ends only when the call carrying it ends - a caller ends it by cancelling that call - and the watcher resumes from its own position. | none |
+| `host-named-writer` | provides | `operation-call:peer-identity-evidence` | On the host half, the writer recorded for each remote change is the one the application names from the caller's evidence; a writer the client claims is never recorded. | none |
+| `ask-application-policy` | provides | `operation-call:peer-identity-evidence` | Before each operation the host asks the application whether the caller may act; it never decides. | none |
 | `dated-local-view` | provides | none | The client half may keep a local view, which always states the position it reflects. | none |
-| `positioned-entity-write` | carries from entitystore | none | Remote writes take one position each in the store's order. | none |
-| `change-provenance` | carries from entitystore | none | Remote readers see when each change was made and the writer the host named. | none |
-| `stated-history-bound` | carries from entitystore | none | A remote reader can read the store's history bound, and a reader behind it is told so. | none |
-| `expected-revision-write` | carries from entitystore | none | An expected revision crosses the network, and a conflict returns as a refusal with its reason. | none |
-| `repeat-recognition` | carries from entitystore | none | The client half passes each invocation's identity as the writer's identity, so repeating an invocation repeats the write and the store recognises it. | none |
-| `identity-name-lookup` | carries from entitystore | none | Remote reads by identity or name, each with the store's position. | none |
-| `find-by-kind-tags` | carries from entitystore | none | Remote finds by kind and tags, each with the store's position. | none |
-| `changes-since-position` | carries from entitystore | none | Remote reads of changes since a position, once and in order. | none |
-| `follow-narrowed-set` | carries from entitystore | `opcall:answer-in-parts`, `opcall:caller-chosen-bound` | A remote follow reports entities entering, changing within and leaving the narrowed set, once and in order. | none |
-| `store-refusal` | carries from entitystore | `opcall:call-refusal` | The store's refusals arrive with their reasons intact. | none |
-| `caller-chosen-bound` | carries from opcall | none | A remote caller sets each operation's bound: total time for a whole answer, or time to the next sign of life for a follow. | none |
-| `honest-call-ending` | carries from opcall | none | Every remote operation ends honestly, even when the honest answer is unknown. | none |
-| `peer-identity-evidence` | carries from opcall | none | The application's policy check receives the caller's evidence. | none |
-| `advertiser-instance-select` | carries from opcall | none | A caller names the host it means, so another host claiming the same store cannot answer in its place. | none |
+| `positioned-entity-write` | carries from entity-store | none | Remote writes take one position each in the store's order. | none |
+| `change-provenance` | carries from entity-store | none | Remote readers see when each change was made and the writer the host named. | none |
+| `stated-history-bound` | carries from entity-store | none | A remote reader can read the store's history bound, and a reader behind it is told so. | none |
+| `expected-revision-write` | carries from entity-store | none | An expected revision crosses the network, and a conflict returns as a refusal with its reason. | none |
+| `repeat-recognition` | carries from entity-store | none | The client half passes each invocation's identity as the writer's identity, so repeating an invocation repeats the write and the store recognises it. | none |
+| `identity-name-lookup` | carries from entity-store | none | Remote reads by identity or name, each with the store's position. | none |
+| `find-by-kind-tags` | carries from entity-store | none | Remote finds by kind and tags, each with the store's position. | none |
+| `changes-since-position` | carries from entity-store | none | Remote reads of changes since a position, once and in order. | none |
+| `follow-narrowed-set` | carries from entity-store | `operation-call:answer-in-parts`, `operation-call:caller-chosen-bound` | A remote follow reports entities entering, changing within and leaving the narrowed set, once and in order. | none |
+| `store-refusal` | carries from entity-store | `operation-call:call-refusal` | The store's refusals arrive with their reasons intact. | none |
+| `caller-chosen-bound` | carries from operation-call | none | A remote caller sets each operation's bound: total time for a whole answer, or time to the next sign of life for a follow. | none |
+| `honest-call-ending` | carries from operation-call | none | Every remote operation ends honestly, even when the honest answer is unknown. | none |
+| `peer-identity-evidence` | carries from operation-call | none | The application's policy check receives the caller's evidence. | none |
+| `advertiser-instance-select` | carries from operation-call | none | A caller names the host it means, so another host claiming the same store cannot answer in its place. | none |
 
 **Traits.**\
 The component holds only the streams open now, so it is not stateful.\
@@ -64,7 +64,7 @@ The host half only makes sense beside a store: the system running it contains th
 ## Reference
 
 Not yet built.\
-This repository, `apnex/entityapi`, private until its first working code: `VISION.md` and, once built, the implementation.
+This repository, `apnex/entity-api`, private until its first working code: `VISION.md` and, once built, the implementation.
 
 ---
 
@@ -79,17 +79,17 @@ This repository, `apnex/entityapi`, private until its first working code: `VISIO
 ### Does it meet my requirement
 
 - The store is reached by name, never by address.
-- Every guarantee the store makes holds for a remote caller, checked by running the store's own guarantee checks through entityapi.
+- Every guarantee the store makes holds for a remote caller, checked by running the store's own guarantee checks through entity-api.
 - The application keeps its kinds and its rules about who may do what.
 
 **It is the wrong tool when**
 
-| You need | Reach elsewhere, because entityapi is |
+| You need | Reach elsewhere, because entity-api is |
 |---|---|
 | a second store kept in step with the first | not a replicator |
 | a record of who followed and how far they got | not a keeper of watchers |
 | commands, screens or wording | not a user interface |
-| reply pairing, time-outs or parts | not the call layer; that is opcall |
+| reply pairing, time-outs or parts | not the call layer; that is operation-call |
 | a decision about who may act | not an authority |
 
 ---
@@ -99,10 +99,10 @@ This repository, `apnex/entityapi`, private until its first working code: `VISIO
 Internal and sovereign, so a fit gap has somewhere to go.
 
 1. Record a measured gap where both sides can see it.
-2. Resolve it by adjusting entityapi, so every consumer gets the change, or by fracturing it when the gap reveals a second duty.
+2. Resolve it by adjusting entity-api, so every consumer gets the change, or by fracturing it when the gap reveals a second duty.
 3. Never fork.
 
-New store operations reach entityapi through entitystore's contract, so a capability added to the store is served by adding it to that contract rather than by a change specific to one application.
+New store operations reach entity-api through entity-store's contract, so a capability added to the store is served by adding it to that contract rather than by a change specific to one application.
 
 ---
 
@@ -113,10 +113,10 @@ Its host half and client half are halves of one duty, not separate components.
 
 **Consumes, through a declared contract:**
 
-- `entitystore`: `declared-shape-validation`, `positioned-entity-write`, `change-provenance`, `expected-revision-write`, `repeat-recognition`, `identity-name-lookup`, `find-by-kind-tags`, `changes-since-position`, `follow-narrowed-set`, `stated-history-bound`, `store-refusal`
-- `opcall`: `honest-call-ending`, `caller-chosen-bound`, `answer-in-parts`, `cancel-invocation`, `invocation-identity`, `request-correlation`, `operation-descriptions`, `declared-shape-validation`, `call-refusal`, `serve-named-operations`, `peer-identity-evidence`, `advertiser-instance-select`
+- `entity-store`: `declared-shape-validation`, `positioned-entity-write`, `change-provenance`, `expected-revision-write`, `repeat-recognition`, `identity-name-lookup`, `find-by-kind-tags`, `changes-since-position`, `follow-narrowed-set`, `stated-history-bound`, `store-refusal`
+- `operation-call`: `honest-call-ending`, `caller-chosen-bound`, `answer-in-parts`, `cancel-invocation`, `invocation-identity`, `request-correlation`, `operation-descriptions`, `declared-shape-validation`, `call-refusal`, `serve-named-operations`, `peer-identity-evidence`, `advertiser-instance-select`
 
 **Composed-by:** nothing yet.\
 Its first consumer is zorg.
 
-The registry's edge vocabulary has no edge for one component using another's contract without containing it; see the note in opcall's entry.
+The registry's edge vocabulary has no edge for one component using another's contract without containing it; see the note in operation-call's entry.

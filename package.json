@@ -1,5 +1,5 @@
 {
-  "name": "@apnex/entityapi",
+  "name": "@apnex/entity-api",
   "version": "0.0.0",
   "private": true,
   "description": "Make an entity store reachable by name, so a remote caller can rely on exactly what a local one can.",
@@ -7,7 +7,7 @@
   "author": "apnex",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/apnex/entityapi.git"
+    "url": "git+https://github.com/apnex/entity-api.git"
   },
   "type": "module",
   "engines": {

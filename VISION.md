@@ -1,7 +1,7 @@
-# entityapi - Vision
+# entity-api - Vision
 
 **Status: ratified by the director, 2026-10-09 (zorg's `docs/DECISIONS.md`, `D5`); enduring.**\
-This document states why entityapi exists and what it will never be.\
+This document states why entity-api exists and what it will never be.\
 It carries no current state, no roadmap, and no schedule.
 
 Holding this document authorises nothing.\
@@ -42,7 +42,7 @@ Each one loses a guarantee somewhere.\
 It drops the position, retries a write blindly, or never tells a watcher that an entity left its set.\
 The store was exact; the copy of it across the network was not.
 
-entityapi writes that layer once, so the guarantees cross the network intact.
+entity-api writes that layer once, so the guarantees cross the network intact.
 
 ---
 
@@ -95,7 +95,7 @@ They are not weighted, and they do not collapse.
 
 **Fidelity.**\
 A remote caller can rely on exactly what a local caller can.\
-The measure is that the store's own guarantee checks, run through entityapi, give the same results as run against the store directly.
+The measure is that the store's own guarantee checks, run through entity-api, give the same results as run against the store directly.
 
 **Ease.**\
 Application logic uses a remote store as it would a local one: the same operations, the same answers, and a few lines to start.\
@@ -103,7 +103,7 @@ The measure is the steps from nothing to a first remote call.
 
 **Leanness.**\
 It adds little code and little cost beyond the store and the call layer.\
-A new kind adds no entityapi code at all.
+A new kind adds no entity-api code at all.
 
 **Reuse.**\
 A second, unrelated application adopts both halves without a variant, a fork, or a change.
