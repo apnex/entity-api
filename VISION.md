@@ -25,6 +25,7 @@ Four terms in that sentence carry weight, so this document defines them rather t
 **None of the store's guarantees** means all of these survive the network:
 
 - every answer says how current it is;
+- a reader can learn how far back the store keeps history;
 - followed changes arrive once and in order, including an entity leaving a followed set;
 - a repeated write is recognised;
 - a write that would overwrite an unseen change is refused, with its reason;
