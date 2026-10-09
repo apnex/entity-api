@@ -34,18 +34,21 @@ The trait column names any trait a system takes on by using the capability.
 |---|---|---|---|---|
 | `serve-store-by-name` | provides | `opcall:serve-named-operations`, `opcall:operation-descriptions`, `opcall:declared-shape-validation`, `opcall:call-refusal` | A host half serves one store's operations as named operations, under a name the application chooses. | none |
 | `local-like-client` | provides | `opcall:honest-call-ending`, `opcall:caller-chosen-bound`, `opcall:invocation-identity`, `opcall:request-correlation` | A client half offers the store's operations to application logic as if the store were local. | none |
-| `follow-closes-with-call` | provides | `opcall:answer-in-parts`, `opcall:cancel-invocation` | A remote follow closes when the call carrying it ends, for any reason, and the watcher resumes from its own position. | none |
+| `follow-closes-with-call` | provides | `opcall:answer-in-parts`, `opcall:cancel-invocation` | A remote follow ends only when the call carrying it ends - a caller ends it by cancelling that call - and the watcher resumes from its own position. | none |
+| `host-named-writer` | provides | `opcall:peer-identity-evidence` | On the host half, the writer recorded for each remote change is the one the application names from the caller's evidence; a writer the client claims is never recorded. | none |
 | `ask-application-policy` | provides | `opcall:peer-identity-evidence` | Before each operation the host asks the application whether the caller may act; it never decides. | none |
 | `dated-local-view` | provides | none | The client half may keep a local view, which always states the position it reflects. | none |
 | `positioned-entity-write` | carries from entitystore | none | Remote writes take one position each in the store's order. | none |
-| `change-provenance` | carries from entitystore | none | Remote readers see when each change was made and the writer named. | none |
+| `change-provenance` | carries from entitystore | none | Remote readers see when each change was made and the writer the host named. | none |
+| `stated-history-bound` | carries from entitystore | none | A remote reader can read the store's history bound, and a reader behind it is told so. | none |
 | `expected-revision-write` | carries from entitystore | none | An expected revision crosses the network, and a conflict returns as a refusal with its reason. | none |
-| `repeat-recognition` | carries from entitystore | none | A writer's identity crosses the network, so the store still recognises a repeated write. | none |
+| `repeat-recognition` | carries from entitystore | none | The client half passes each invocation's identity as the writer's identity, so repeating an invocation repeats the write and the store recognises it. | none |
 | `identity-name-lookup` | carries from entitystore | none | Remote reads by identity or name, each with the store's position. | none |
 | `find-by-kind-tags` | carries from entitystore | none | Remote finds by kind and tags, each with the store's position. | none |
 | `changes-since-position` | carries from entitystore | none | Remote reads of changes since a position, once and in order. | none |
 | `follow-narrowed-set` | carries from entitystore | `opcall:answer-in-parts`, `opcall:caller-chosen-bound` | A remote follow reports entities entering, changing within and leaving the narrowed set, once and in order. | none |
 | `store-refusal` | carries from entitystore | `opcall:call-refusal` | The store's refusals arrive with their reasons intact. | none |
+| `caller-chosen-bound` | carries from opcall | none | A remote caller sets each operation's bound: total time for a whole answer, or time to the next sign of life for a follow. | none |
 | `honest-call-ending` | carries from opcall | none | Every remote operation ends honestly, even when the honest answer is unknown. | none |
 | `peer-identity-evidence` | carries from opcall | none | The application's policy check receives the caller's evidence. | none |
 | `advertiser-instance-select` | carries from opcall | none | A caller names the host it means, so another host claiming the same store cannot answer in its place. | none |

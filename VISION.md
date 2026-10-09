@@ -66,14 +66,15 @@ It does not pair replies, time out calls, or carry parts.\
 It uses the layer beneath that does.
 
 **Not an authority.**\
-It asks the application whether a caller may act; it never decides.
+It asks the application whether a caller may act; it never decides.\
+The writer it records for a remote change is the one the application names from the caller's evidence, never one the client claims.
 
 **Not the owner of kinds.**\
 It carries whatever kinds the store holds, and knows none of them.
 
 **Not a keeper of watchers.**\
 It holds no record of who follows beyond the streams open now.\
-When the call carrying a follow ends, for any reason, the follow closes.\
+When the call carrying a follow ends, for any reason, the follow closes; a caller ends a follow by ending its call.\
 A watcher that leaves is forgotten, and resumes from its own position.
 
 **Not a replicator.**\
