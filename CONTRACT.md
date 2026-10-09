@@ -11,8 +11,9 @@ related: [C0, A3]
 
 # entityapi
 
-Draft registry entry, written before any consumer's architecture so that its contract states the whole offer.\
-The id is unminted on purpose; one is minted only when the entry is admitted to the registry.
+The contract of record for entityapi: what a consumer can depend on, written before any consumer's architecture so that it states the whole offer.\
+It also carries the fields of a mission-kit registry entry, and that entry is generated from this file when the component is filed, never written as a second copy.\
+The registry id is unminted on purpose; one is minted only when the entry is admitted to the registry.
 
 ---
 
