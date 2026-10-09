@@ -1,6 +1,6 @@
 # entityapi - Vision
 
-**Status: ratified by the director, 2026-10-09 (`docs/DECISIONS.md`, `D5`); enduring.**\
+**Status: ratified by the director, 2026-10-09 (zorg's `docs/DECISIONS.md`, `D5`); enduring.**\
 This document states why entityapi exists and what it will never be.\
 It carries no current state, no roadmap, and no schedule.
 

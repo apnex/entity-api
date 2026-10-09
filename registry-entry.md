@@ -63,7 +63,7 @@ The host half only makes sense beside a store: the system running it contains th
 ## Reference
 
 Not yet built.\
-Vision: `entityapi/VISION.md` in the zorg repository, which will hold the implementation until the component earns a repository of its own.
+This repository, `apnex/entityapi`, private until its first working code: `VISION.md` and, once built, the implementation.
 
 ---
 
