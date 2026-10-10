@@ -39,7 +39,7 @@ The trait column names any trait a system takes on by using the capability.
 | `host-named-writer` | provides | `operation-call:peer-identity-evidence` | On the host half, the writer recorded for each remote change is the one the application names from the caller's evidence; a writer the client claims is never recorded. | none |
 | `ask-application-policy` | provides | `operation-call:peer-identity-evidence` | Before each operation the host asks the application whether the caller may act; it never decides. | none |
 | `dated-local-view` | provides | none | The client half may keep a local view, which always states the position it reflects. | none |
-| `positioned-entity-write` | carries from entity-store | none | Remote writes take one position each in the store's order. | none |
+| `positioned-entity-write` | carries from entity-store | none | Each remote change takes one position in the store's order. | none |
 | `change-provenance` | carries from entity-store | none | Remote readers see when each change was made and the writer the host named. | none |
 | `stated-history-bound` | carries from entity-store | none | A remote reader can read the store's history bound, and a reader behind it is told so. | none |
 | `expected-revision-write` | carries from entity-store | none | An expected revision crosses the network, and a conflict returns as a refusal with its reason. | none |
