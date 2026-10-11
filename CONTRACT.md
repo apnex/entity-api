@@ -63,8 +63,10 @@ The host half only makes sense beside a store: the system running it contains th
 
 ## Reference
 
-Not yet built.\
-This repository, `apnex/entity-api`, private until its first working code: `VISION.md` and, once built, the implementation.
+This repository, `apnex/entity-api`, private until its first working code is certified.\
+The package `@apnex/entity-api` exports `serveStore`, the host half, and `createStoreClient`, the client half, as `export-map.json` records.\
+`follow-closes-with-call`, `dated-local-view`, `changes-since-position` and `follow-narrowed-set` are deferred under zorg's `D15`.\
+It depends on `@apnex/entity-store`, `@apnex/operation-call` and `@agp/node` through `file:` links, takes AGP's and entity-store's types only, and imports no module particular to one runtime.
 
 ---
 

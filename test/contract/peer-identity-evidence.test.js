@@ -1,0 +1,79 @@
+// peer-identity-evidence (carried from operation-call) - the application's policy check receives the caller's
+// evidence (zorg's target, EM11, EM13; zorg's D26, D31; E5).
+//
+// Cases: the policy and the writer naming each receive the evidence function's own answer for the request,
+// unchanged, and AGP's delivery context as AGP gave it to the evidence function, naming the caller's node as
+// the origin; an evidence function answering asynchronously is awaited; with no evidence function the evidence
+// is null and the delivery context still arrives; and an evidence function that fails ends the invocation
+// unknown with operation-failed before the writer naming or the policy is asked.
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { within } from "../support/topology.js";
+import { answerOf, note, served } from "../support/serving.js";
+
+test("the policy and the writer naming receive the evidence function's own answer, and AGP's delivery context as the evidence function was given it", async (t) => {
+	const given = [];
+	const answers = [];
+	const policySaw = [];
+	const writerSaw = [];
+	const { clients: { alice, bob } } = await served(t, {
+		evidence: (delivery) => {
+			given.push(delivery);
+			const answer = { kind: "agp-session", node: delivery.source.originNodeId, principal: delivery.source.originNodeId, proved: false };
+			answers.push(answer);
+			return answer;
+		},
+		nameWriter: (caller) => { writerSaw.push(caller); return caller.evidence.principal; },
+		policy: (q) => { policySaw.push(q); return { allowed: true }; },
+	});
+	answerOf(await within(alice.create(note("alpha"))));
+	answerOf(await within(bob.read({ target: { id: "e1.1" } })));
+	assert.equal(policySaw.length, 2);
+	for (const [i, q] of policySaw.entries()) {
+		assert.equal(q.evidence, answers[i], "the evidence function's own answer");
+		assert.equal(q.delivery, given[i], "the delivery context the evidence function was given");
+	}
+	assert.equal(writerSaw[0].evidence, answers[0]);
+	assert.equal(writerSaw[0].delivery, given[0]);
+	assert.deepEqual(policySaw.map((q) => [q.delivery.source.originNodeId, q.delivery.source.endpoint, q.delivery.destination]), [["alice", "operation-call/replies", "store/create"], ["bob", "operation-call/replies", "store/read"]]);
+	assert.deepEqual(policySaw.map((q) => q.evidence.principal), ["alice", "bob"]);
+});
+
+test("an evidence function answering asynchronously is awaited, and its answer is the caller's evidence", async (t) => {
+	const seen = [];
+	const { clients: { alice } } = await served(t, {
+		callers: ["alice"],
+		evidence: async (delivery) => { await new Promise((resolve) => setTimeout(resolve, 5)); return { late: true, node: delivery.source.originNodeId }; },
+		policy: (q) => { seen.push(q.evidence); return { allowed: true }; },
+	});
+	assert.equal(answerOf(await within(alice.create(note("alpha")))).entity.created.writer, "alice");
+	assert.deepEqual(seen, [{ late: true, node: "alice" }]);
+});
+
+test("with no evidence function the caller's evidence is null, and AGP's delivery context still arrives", async (t) => {
+	const seen = [];
+	const { clients: { alice } } = await served(t, {
+		callers: ["alice"],
+		evidence: null,
+		nameWriter: (caller) => { seen.push(["writer", caller.evidence, caller.delivery.source.originNodeId]); return caller.delivery.source.originNodeId; },
+		policy: (q) => { seen.push(["policy", q.evidence, q.delivery.source.originNodeId]); return { allowed: true }; },
+	});
+	answerOf(await within(alice.create(note("alpha"))));
+	assert.deepEqual(seen, [["writer", null, "alice"], ["policy", null, "alice"]]);
+});
+
+test("an evidence function that fails ends the invocation unknown with operation-failed, before the writer naming or the policy is asked", async (t) => {
+	const asked = [];
+	const { clients: { alice }, store } = await served(t, {
+		callers: ["alice"],
+		evidence: () => { throw new Error("no session record"); },
+		nameWriter: () => { asked.push("writer"); return "alice"; },
+		policy: () => { asked.push("policy"); return { allowed: true }; },
+	});
+	for (const call of [() => alice.create(note("alpha")), () => alice.read({ target: { id: "e1.1" } })]) {
+		const ending = await within(call());
+		assert.deepEqual([ending.ending, ending.reason, ending.agpCode], ["unknown", "operation-failed", null]);
+	}
+	assert.deepEqual(asked, []);
+	assert.equal(store.historyBound().answer.position, 0);
+});
