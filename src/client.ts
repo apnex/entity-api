@@ -18,16 +18,12 @@ import {
 	systemCallClock,
 	systemIdentitySource,
 	MAX_BOUND_MS,
-	type AnsweredEnding,
 	type CallClock,
 	type CallEnding,
 	type IdentitySource,
 	type JsonInput,
 	type JsonValue,
-	type NotDeliveredEnding,
 	type OperationCaller,
-	type RefusedEnding,
-	type UnknownEnding,
 } from "@apnex/operation-call";
 import { isInvocationId, NAME_PATTERN } from "@apnex/operation-call/message-format";
 import { snapshotJson } from "./json.js";
@@ -64,11 +60,19 @@ export interface WriteOptions extends CallOptions {
 	readonly repeat?: boolean;
 }
 
-/** An ending whose attempt is null when no attempt was made: a whole find whose bound passed before its first page. */
-type FindEndingOf<E> = Omit<E, "attempt"> & { readonly attempt: string | null };
+/**
+ * One of the caller's endings as a whole find gives it: every field the caller gave, unchanged, but its
+ * invocation and attempt the first page's, and its attempt null when the bound passed before any page was sent.
+ * It distributes over the caller's endings, so each keeps its own fields - a hop's `proxyCode` and reasons
+ * included (EM12) - and none is narrowed.
+ */
+type FindEndingOf<E> = E extends unknown ? Omit<E, "attempt"> & { readonly attempt: string | null } : never;
 
-/** How a whole find ends (EM10): its identity is always its first page's. */
-export type FindEnding = FindEndingOf<AnsweredEnding> | FindEndingOf<RefusedEnding> | FindEndingOf<NotDeliveredEnding> | FindEndingOf<UnknownEnding>;
+/**
+ * How a whole find ends (EM10): as its last page ended, through whatever caller the client was given - so every
+ * ending the caller interface admits, a caller across a hop's included (EM12) - under its first page's identity.
+ */
+export type FindEnding = FindEndingOf<CallEnding>;
 
 /** The store's operations, as if the store were local. */
 export interface StoreClient {
@@ -183,15 +187,19 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 	};
 
 	/**
-	 * The whole find of EM10. Its input and options are read once, into a snapshot, and only then is its clock
-	 * read for the one deadline; each page is invoked with the time left, read immediately before that page is
-	 * invoked and rounded down to a whole millisecond, as its bound, so no getter of the caller's runs between
-	 * that reading and the invocation; no page is sent with less than 1 millisecond left, and no page is taken
-	 * once the deadline has passed. The first page goes under the identity given, or a new one, each later page
-	 * under a new identity, as of the first page's position and after the last page's `next`. A page whose
-	 * answer is not a page ends the find answered with that answer unchanged.
+	 * The whole find of EM10. Its clock is read as it is called, before anything else, as every caller reads
+	 * its own (EM12); then its input and options are read once, into a snapshot, and its one deadline is that
+	 * first reading plus the bound, so the time the snapshot takes is spent from the bound. Each page is invoked
+	 * with the time left, read immediately before that page is invoked and rounded down to a whole millisecond,
+	 * as its bound, so no getter of the caller's runs between that reading and the invocation; no page is sent
+	 * with less than 1 millisecond left - the first included, when preparing the find used the bound up - and no
+	 * page is taken once the deadline has passed. The first page goes under the identity given, or a new one,
+	 * each later page under a new identity, as of the first page's position and after the last page's `next`.
+	 * A page whose answer is not a page ends the find answered with that answer unchanged. Every ending is the
+	 * caller's, unchanged but for the first page's invocation and attempt.
 	 */
 	const find = async (input: JsonInput, call?: CallOptions): Promise<FindEnding> => {
+		const start = now();
 		const given = optionsOf(call, false);
 		const bound = checkBound(given.bound ?? options.bound);
 		if (given.invocation !== undefined && !isInvocationId(given.invocation)) throw new TypeError("a call's invocation must be an invocation identity as EM11 writes it");
@@ -202,8 +210,8 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 			throw new TypeError("a find's input could not be read as a JSON value", { cause: error });
 		}
 		if (query === undefined) throw new TypeError("a find's input must be a JSON value");
-		const deadline = now() + bound;
-		let first: { readonly invocation: string; readonly attempt: string } | undefined;
+		const deadline = start + bound;
+		let first: { readonly invocation: string; readonly attempt: string | null } | undefined;
 		let position: number | undefined;
 		const entries: JsonValue[] = [];
 		let page = query as JsonInput;
@@ -221,17 +229,17 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 			};
 			// The page's ending, its fields read once.
 			const ending = { ...(await callerInvoke.call(caller, request)) } as CallEnding;
-			first ??= { invocation: ending.invocation, attempt: ending.attempt };
-			if (ending.ending !== "answered") return Object.freeze({ ...ending, invocation: first.invocation, attempt: first.attempt });
+			const address = first ??= { invocation: ending.invocation, attempt: ending.attempt };
+			if (ending.ending !== "answered") return Object.freeze({ ...ending, invocation: address.invocation, attempt: address.attempt });
 			const form = pageOf(ending.answer);
 			// An answer taken once the deadline has passed loses to it, as EM12 has a call's bound win.
 			if (now() >= deadline) return boundPassed();
-			if (form === undefined) return Object.freeze({ ...ending, invocation: first.invocation, attempt: first.attempt });
+			if (form === undefined) return Object.freeze({ ...ending, invocation: address.invocation, attempt: address.attempt });
 			position ??= form.position;
 			for (const entry of form.entries) entries.push(entry);
 			if (form.next === null) {
 				return Object.freeze({
-					ending: "answered", invocation: first.invocation, attempt: first.attempt, operation: "find",
+					ending: "answered", invocation: address.invocation, attempt: address.attempt, operation: "find",
 					answer: Object.freeze({ position, entries: Object.freeze(entries) as unknown as JsonValue[] }),
 				});
 			}

@@ -7,11 +7,13 @@
 // refused, not delivered and unknown; the first page under the identity given and every later page under a new
 // one, none marked a repeat; the JSON of a successful two-page find; finds as of positions 0, the current one,
 // one below 0 and one above the current one; duplicate tags in a find; and a find by kind and tags.
-// After the first verification (EM10 as revised): the find's input and options read once, into a snapshot,
-// before its clock - time passing in their getters, and in the first and a later page's preparation, and a
-// final page that cannot be accepted; deep JSON, cycles, aliases and getters in a whole find's input; the
-// abort signal reaching every page; and a page whose answer is not a page, first or later, ending the find
-// answered with that answer unchanged under the first page's invocation and attempt.
+// After the verifications (EM10 as revised): the find's clock read as it is called, then its input and options
+// read once, into a snapshot, the time that takes spent from its bound - time passing in their getters, a slow
+// signal, bound or input getter using the bound up before the first page, as findPage ends for the same input,
+// time passing in the first and a later page's preparation, and a final page that cannot be accepted; deep
+// JSON, cycles, aliases and getters in a whole find's input; the abort signal reaching every page; and a page
+// whose answer is not a page, first or later, ending the find answered with that answer unchanged under the
+// first page's invocation and attempt.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createStoreClient } from "@apnex/entity-api";
@@ -255,22 +257,49 @@ function scriptedCaller(answers, during = {}) {
 	};
 }
 
-test("the find reads its input and options once, into a snapshot, and only then its clock: time passing in their getters takes nothing from its pages' bounds", async (t) => {
+test("the find reads its clock as it is called, then its input and options once, into a snapshot: time passing in their getters is spent from its bound", async (t) => {
 	const { client, entry, topology } = await setup(t, { count: 3 });
 	const reads = { bound: 0, invocation: 0, signal: 0, kind: 0 };
 	const signal = new AbortController().signal;
 	const options = {
-		get bound() { reads.bound++; topology.hooks.moveCallClock(300); return 1000; },
-		get invocation() { reads.invocation++; topology.hooks.moveCallClock(300); return ID; },
-		get signal() { reads.signal++; topology.hooks.moveCallClock(300); return signal; },
+		get bound() { reads.bound++; topology.hooks.moveCallClock(100); return 1000; },
+		get invocation() { reads.invocation++; topology.hooks.moveCallClock(100); return ID; },
+		get signal() { reads.signal++; topology.hooks.moveCallClock(100); return signal; },
 	};
-	const input = { get kind() { reads.kind++; topology.hooks.moveCallClock(300); return "any"; } };
+	const input = { get kind() { reads.kind++; topology.hooks.moveCallClock(100.5); return "any"; } };
 	const ending = await within(client.find(input, options));
 	assert.deepEqual(names(answerOf(ending).entries), ["e1", "e2", "e3"]);
 	assert.deepEqual(reads, { bound: 1, invocation: 1, signal: 1, kind: 1 }, "each getter read once");
-	assert.deepEqual(entry.calls.map((p) => p.bound), [1000, 1000], "the deadline starts once the snapshot is taken");
+	assert.deepEqual(entry.calls.map((p) => p.bound), [599, 599], "the 400.5 ms spent reading them taken from the one bound, read as the find was called");
 	assert.deepEqual(entry.calls.map((p) => [p.input.kind, p.signal === signal]), [["any", true], ["any", true]]);
 	assert.equal(ending.invocation, ID);
+});
+
+test("a slow signal getter, a slow bound getter or a slow input getter that uses the bound up ends the find unknown at its bound, attempt null, under the identity given or a new one, with no page sent, as findPage ends for the same input", async (t) => {
+	const { topology, entry, pagesServed } = await setup(t, { count: 3 });
+	const identities = { wallTimeMs: () => 1791540000123.9, randomHex: (n) => "b".repeat(n) };
+	const client = clientOf(topology, "alice", { bound: 10, identities });
+	const slow = (ms, value) => { topology.hooks.moveCallClock(ms); return value; };
+	const preparations = {
+		signal: (ms, given = {}) => [{ kind: "any" }, { ...given, get signal() { return slow(ms, undefined); } }],
+		bound: (ms, given = {}) => [{ kind: "any" }, { ...given, get bound() { return slow(ms, 10); } }],
+		input: (ms, given = {}) => [{ get kind() { return slow(ms, "any"); } }, given],
+	};
+	for (const [what, prepare] of Object.entries(preparations)) {
+		const given = await within(client.find(...prepare(20, { invocation: ID })));
+		assert.deepEqual(given, { ending: "unknown", invocation: ID, attempt: null, operation: "find", reason: "bound-passed", agpCode: null, deliveryReport: null }, `${what}: under the identity given`);
+		assert.ok(Object.isFrozen(given));
+		const made = await within(client.find(...prepare(20)));
+		assert.deepEqual([made.ending, made.reason, made.invocation, made.attempt], ["unknown", "bound-passed", "1791540000123-bbbbbbbbbbbbbbbb", null], `${what}: under a new identity`);
+		const edge = await within(client.find(...prepare(9.5)));
+		assert.deepEqual([edge.ending, edge.reason, edge.attempt], ["unknown", "bound-passed", null], `${what}: less than 1 ms left`);
+	}
+	assert.equal(entry.calls.length, 0, "no page was sent");
+	const page = await within(client.findPage(...preparations.input(20)));
+	assert.deepEqual([page.ending, page.reason], ["unknown", "bound-passed"], "findPage ends at its bound for the same input");
+	answerOf(await within(client.find(...preparations.input(9))));
+	assert.deepEqual(entry.calls.slice(1).map((p) => p.bound), [1, 1], "with exactly 1 ms left, each page is sent, bounded by what is left");
+	assert.equal(pagesServed(), 2);
 });
 
 test("time passing while the call layer prepares the first page, or a later one, is taken from that page's bound: the find ends unknown, no page is answered after its deadline, and nothing further is sent", async (t) => {

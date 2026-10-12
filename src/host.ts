@@ -34,7 +34,7 @@ import {
 	type OperationResult,
 	type RefusalRecord,
 } from "@apnex/operation-call";
-import { frozenSnapshot } from "./json.js";
+import { frozenSnapshot, snapshotJson } from "./json.js";
 import { inputShape, isWrite, STORE_OPERATIONS, type StoreOperation, type WriteOperation } from "./store-operations.js";
 
 /** What the application's writer naming is given: the caller's evidence, and AGP's delivery context. */
@@ -126,8 +126,10 @@ function consume(value: PromiseLike<unknown>): void {
 /**
  * Asks the policy and reads its ruling once, each field once (EM13). Anything but a synchronous ruling of the
  * declared form is the application's fault, thrown, so operation-call ends the invocation `failed` with
- * `operation-failed` and nothing is written. A promise, as the ruling or as its refusal, is consumed before
- * it is refused, so its outcome never escapes to the host's runtime as an unhandled rejection.
+ * `operation-failed` and nothing is written. A promise met anywhere in reading the ruling - as the ruling, as
+ * its `allowed`, as its refusal or within the refusal - has its outcome consumed, every one of them, before the
+ * ruling is refused, so none escapes to the host's runtime as an unhandled rejection; nothing is awaited. The
+ * refusal is read once, whole, into a JSON copy equal to it, and that copy is what is passed on.
  */
 function rule(policy: ApplicationPolicy, question: PolicyQuestion): PolicyRuling {
 	const ruling: unknown = policy(question);
@@ -137,12 +139,19 @@ function rule(policy: ApplicationPolicy, question: PolicyQuestion): PolicyRuling
 	}
 	if (ruling === null || typeof ruling !== "object") throw new TypeError("the application's policy ruled with neither { allowed: true } nor { allowed: false, refusal }");
 	const { allowed, refusal } = ruling as { allowed?: unknown; refusal?: unknown };
-	if (isThenable(refusal)) {
-		consume(refusal);
-		throw new TypeError("the application's policy must refuse synchronously, with a refusal record, not a promise of one (EM13)");
-	}
+	let promised = false;
+	/** Consumes a promise met in the ruling, which is then refused; its refusal is read all the same. */
+	const meet = (item: unknown): boolean => {
+		if (!isThenable(item)) return false;
+		consume(item);
+		promised = true;
+		return true;
+	};
+	meet(allowed);
+	const copy = refusal === undefined ? undefined : snapshotJson(refusal, meet);
+	if (promised) throw new TypeError("the application's policy must rule synchronously, with no promise in its ruling (EM13)");
 	if (allowed === true) return { allowed: true };
-	if (allowed === false) return { allowed: false, refusal: refusal as RefusalRecord };
+	if (allowed === false && copy !== undefined) return { allowed: false, refusal: copy as RefusalRecord };
 	throw new TypeError("the application's policy ruled with neither { allowed: true } nor { allowed: false, refusal }");
 }
 

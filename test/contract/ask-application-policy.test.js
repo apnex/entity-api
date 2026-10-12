@@ -10,11 +10,19 @@
 // agent has since taken; a policy that throws, rules asynchronously, rules in another form, or allows a
 // write no writer was named for, each ending the invocation unknown with nothing written; the ruling's fields
 // each read once, and a refusal that is a promise, rejecting at once or later, ending the invocation unknown
-// with its outcome consumed, nothing written, and the host serving on; the input, the evidence and the target
+// with its outcome consumed, nothing written, and the host serving on; a promise as the ruling's allowed, or
+// within its refusal, rejecting at once or later, for a create and a read, the same, in a child process with
+// no process-wide rejection handler; the input, the evidence and the target
 // given as deeply frozen JSON snapshots, which the policy cannot change; describe, operation-call's own,
 // ruled on by no policy and naming no writer; and a policy's denial winning over a reused identity.
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { openTopology, within } from "../support/topology.js";
 import { answerOf, clientOf, note, openStore, serve } from "../support/serving.js";
 import { policyRefusal, recordingStore, writerOnlyPolicy } from "../support/policies.js";
@@ -247,6 +255,30 @@ test("a refusal that is a promise, rejecting at once or later, ends the invocati
 	which = -1;
 	assert.equal(answerOf(await within(alice.create(note("after")))).position, 1, "the host serves on");
 	assert.equal(process.listenerCount("unhandledRejection"), handlers, "no process-wide rejection handler was left installed");
+});
+
+test("a promise as the ruling's allowed, or within its refusal, rejecting at once or later, for a create and a read, ends the invocation unknown with operation-failed, its outcome consumed, nothing written, and the host serving on, in a process with no rejection handler", async (t) => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "entity-api-policy-rejection-"));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	const resultFile = path.join(dir, "result.json");
+	const errors = fs.openSync(path.join(dir, "stderr.txt"), "w");
+	const child = spawn(process.execPath, ["--unhandled-rejections=throw", fileURLToPath(new URL("../support/policy-rejection-child.js", import.meta.url)), resultFile],
+		{ stdio: ["ignore", errors, errors], env: { ...process.env, NODE_OPTIONS: undefined, NODE_TEST_CONTEXT: undefined } });
+	const [code, signal] = await within(once(child, "exit"), "the child's exit");
+	fs.closeSync(errors);
+	const stderr = fs.readFileSync(path.join(dir, "stderr.txt"), "utf8");
+	assert.deepEqual([code, signal], [0, null], `the child ran to its end, no rejection escaping: ${stderr}`);
+	const { cases, handlers } = JSON.parse(fs.readFileSync(resultFile, "utf8"));
+	assert.equal(handlers, 0, "the child installed no process-wide rejection handler");
+	assert.equal(cases.length, 12, "three forms, two timings, a create and a read");
+	for (const [i, c] of cases.entries()) {
+		const what = `${c.form}, rejecting ${c.timing}, ${c.operation}`;
+		assert.deepEqual(c.ending, ["unknown", "operation-failed", null], what);
+		assert.equal(c.written, false, `${what}: nothing written`);
+		assert.deepEqual([c.next, c.nextPosition], ["answered", c.positionBefore + 1], `${what}: the host serves the next request`);
+		assert.equal(c.positionBefore, i, `${what}: only the requests served took a position`);
+	}
+	assert.deepEqual([...new Set(cases.map((c) => c.form))], ["allowed", "within the refusal", "allowed and within the refusal"]);
 });
 
 test("the policy's ruling is read once, each field once, and its refusal passed on unchanged", async (t) => {

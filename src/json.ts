@@ -15,8 +15,13 @@
  * first time only, its completed copy kept by the object's identity and given again at every later
  * reference, while the containers still being copied are tracked apart, so a value holding itself is still
  * not JSON. A getter or a proxy that throws throws from here, for the caller of this function to contain.
+ *
+ * Given `meet`, every object and function the walk comes to is shown to it before it is judged, and the walk
+ * goes on to the end, past whatever is not JSON, so nothing within the value goes unmet; an item `meet`
+ * takes - answering true - is not JSON and is not walked into, and the snapshot is still undefined when any
+ * part was not JSON. Without it, the walk stops at the first part that is not JSON.
  */
-export function snapshotJson(value: unknown): unknown {
+export function snapshotJson(value: unknown, meet?: (item: object) => boolean): unknown {
 	interface Slot { readonly value: unknown; readonly store: (copy: unknown) => void }
 	interface Exit { readonly item: object; readonly copy: unknown; readonly depth: number }
 	let result: unknown;
@@ -26,6 +31,8 @@ export function snapshotJson(value: unknown): unknown {
 	// The containers whose copies are complete, so one reached again is given its first copy, not read again.
 	const done = new Map<object, unknown>();
 	const exits: Exit[] = [];
+	// Set when a part is not JSON while `meet` keeps the walk going to the end.
+	let refused = false;
 	while (stack.length > 0) {
 		// Every container whose members have all been copied leaves the open path and becomes done.
 		while (exits.length > 0 && (exits.at(-1) as Exit).depth >= stack.length) {
@@ -39,28 +46,52 @@ export function snapshotJson(value: unknown): unknown {
 			continue;
 		}
 		if (typeof item === "number") {
-			if (!Number.isFinite(item)) return undefined;
+			if (!Number.isFinite(item)) {
+				if (meet === undefined) return undefined;
+				refused = true;
+				continue;
+			}
 			store(item);
 			continue;
 		}
-		if (typeof item !== "object") return undefined;
+		if (meet !== undefined && (typeof item === "object" || typeof item === "function") && meet(item)) {
+			refused = true;
+			continue;
+		}
+		if (typeof item !== "object") {
+			if (meet === undefined) return undefined;
+			refused = true;
+			continue;
+		}
 		if (done.has(item)) {
 			store(done.get(item));
 			continue;
 		}
-		if (open.has(item)) return undefined;
+		if (open.has(item)) {
+			if (meet === undefined) return undefined;
+			refused = true;
+			continue;
+		}
 		const members: [string | number, unknown][] = [];
 		let copy: unknown[] | { [name: string]: unknown };
 		if (Array.isArray(item)) {
 			const length = item.length;
 			for (let i = 0; i < length; i++) {
-				if (!(i in item)) return undefined;
+				if (!(i in item)) {
+					if (meet === undefined) return undefined;
+					refused = true;
+					continue;
+				}
 				members.push([i, item[i]]);
 			}
 			copy = new Array<unknown>(length);
 		} else {
 			const prototype = Object.getPrototypeOf(item);
-			if (prototype !== Object.prototype && prototype !== null) return undefined;
+			if (prototype !== Object.prototype && prototype !== null) {
+				if (meet === undefined) return undefined;
+				refused = true;
+				continue;
+			}
 			for (const name of Object.keys(item)) members.push([name, (item as { [name: string]: unknown })[name]]);
 			copy = {};
 		}
@@ -73,7 +104,7 @@ export function snapshotJson(value: unknown): unknown {
 			stack.push({ value: member, store: (c) => { Object.defineProperty(target, key, { value: c, enumerable: true, writable: true, configurable: true }); } });
 		}
 	}
-	return result;
+	return refused ? undefined : result;
 }
 
 /** A snapshot of a JSON value, frozen at every level; throws a TypeError when the value is not JSON. */

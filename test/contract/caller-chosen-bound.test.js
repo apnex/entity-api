@@ -5,9 +5,11 @@
 // ends unknown exactly at the bound its caller gave - the call's own or the client's - and not a millisecond
 // before; the whole find's bound is one deadline for all its pages, from the moment it is called, however its
 // pages spend it; and a bound outside 1 to 2147483647 milliseconds, or not whole, is a programming error,
-// thrown with nothing sent. With operation-call's default clock, a whole find's deadline is read only once its
-// input and options are read, and no page is answered after it: time passing in their getters, in the first
-// and a later page's preparation, and a final page that cannot be accepted, each with wide margins.
+// thrown with nothing sent. With operation-call's default clock, a whole find's clock is read as it is called,
+// before its input and options are read, and no page is answered after its deadline: time passing in their
+// getters spent from the bound, a slow signal, bound or input getter using the bound up before the first page,
+// as findPage ends for the same input, time passing in the first and a later page's preparation, and a final
+// page that cannot be accepted, each with wide margins.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createStoreClient } from "@apnex/entity-api";
@@ -108,13 +110,32 @@ async function realClock(t, { identities, find } = {}) {
 	return { topology, entry: topology.caller("alice"), pages: () => pages };
 }
 
-test("on the default clock, time spent in a find's option and input getters is spent before its deadline is read, so its first page is given the whole bound", async (t) => {
+test("on the default clock, time spent in a find's option and input getters is spent from its bound, read as the find was called", async (t) => {
 	const { topology, entry } = await realClock(t);
 	const client = clientOf(topology, "alice", { bound: 60_000, clock: topology.callClock });
 	const options = { get bound() { busy(150); return 60_000; }, get signal() { busy(150); return undefined; } };
 	const input = { get kind() { busy(150); return "any"; } };
 	answerOf(await within(client.find(input, options)));
-	assert.ok(entry.calls[0].bound >= 59_999, `the first page's bound, ${entry.calls[0].bound}, takes nothing for the 450 ms spent in getters`);
+	assert.ok(entry.calls[0].bound <= 59_550, `the first page's bound, ${entry.calls[0].bound}, has the 450 ms spent in getters taken from it`);
+});
+
+test("on the default clock, a slow signal getter, a slow bound getter or a slow input getter outlasting the find's bound ends it unknown at its bound, attempt null, with no page sent, as findPage ends for the same input", async (t) => {
+	const { topology, entry, pages } = await realClock(t);
+	const client = clientOf(topology, "alice", { bound: 1000, clock: topology.callClock });
+	const slow = (value) => { busy(1500); return value; };
+	const preparations = {
+		signal: () => [{ kind: "any" }, { get signal() { return slow(undefined); } }],
+		bound: () => [{ kind: "any" }, { get bound() { return slow(1000); } }],
+		input: () => [{ get kind() { return slow("any"); } }, {}],
+	};
+	for (const [what, prepare] of Object.entries(preparations)) {
+		const ending = await within(client.find(...prepare()));
+		assert.deepEqual([ending.ending, ending.reason, ending.attempt, ending.agpCode, ending.deliveryReport], ["unknown", "bound-passed", null, null, null], what);
+	}
+	assert.equal(entry.calls.length, 0, "no page was sent");
+	const page = await within(client.findPage(...preparations.input()));
+	assert.deepEqual([page.ending, page.reason], ["unknown", "bound-passed"], "findPage ends at its bound for the same input");
+	assert.equal(pages(), 0, "nothing reached the store");
 });
 
 test("on the default clock, a first or later page whose preparation outlasts the find's bound is never answered: the find ends unknown at its bound", async (t) => {
