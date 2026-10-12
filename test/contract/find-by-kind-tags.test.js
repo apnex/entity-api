@@ -14,6 +14,12 @@
 // JSON, cycles, aliases and getters in a whole find's input; the abort signal reaching every page; and a page
 // whose answer is not a page, first or later, ending the find answered with that answer unchanged under the
 // first page's invocation and attempt.
+// The single calls (EM10 as revised), findPage, a write and a read, read their clock as they are called, as
+// the whole find does: a slow signal, bound, invocation or input getter spending all the bound, or leaving less
+// than 1 millisecond, ends the call unknown with bound-passed, whole and frozen, with nothing handed to the call
+// layer, under the identity given or a new one and a new attempt identity of it; spending part of the bound, it
+// leaves the call layer exactly the time left, rounded down; a programming error found once the bound has
+// passed is still thrown; and the find and findPage end alike for the same preparation, but for their attempts.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createStoreClient } from "@apnex/entity-api";
@@ -297,9 +303,146 @@ test("a slow signal getter, a slow bound getter or a slow input getter that uses
 	assert.equal(entry.calls.length, 0, "no page was sent");
 	const page = await within(client.findPage(...preparations.input(20)));
 	assert.deepEqual([page.ending, page.reason], ["unknown", "bound-passed"], "findPage ends at its bound for the same input");
+	assert.equal(entry.calls.length, 0, "nothing handed to the call layer for findPage either");
 	answerOf(await within(client.find(...preparations.input(9))));
-	assert.deepEqual(entry.calls.slice(1).map((p) => p.bound), [1, 1], "with exactly 1 ms left, each page is sent, bounded by what is left");
+	assert.deepEqual(entry.calls.map((p) => p.bound), [1, 1], "with exactly 1 ms left, each page is sent, bounded by what is left");
 	assert.equal(pagesServed(), 2);
+});
+
+/** EM11's attempt identity. */
+const ATTEMPT = /^[0-9]{13}-[0-9a-f]{16}\.[0-9a-f]{8}$/;
+
+/** An identity source whose random digits count up, so each identity the client makes is known: `ahead(i, n)` is what the ith next randomHex(n) gives. */
+function countingIdentities() {
+	let k = 0;
+	const hex = (i, n) => i.toString(16).padStart(n, "0");
+	return { source: { wallTimeMs: () => 1791540000123.9, randomHex: (n) => hex(++k, n) }, ahead: (i, n) => hex(k + i, n) };
+}
+
+/** The single calls driven here - findPage, a write and a read - each with the operation it invokes and a fresh input. */
+const SINGLES = {
+	findPage: { operation: "find", call: (c, input, o) => c.findPage(input, o), input: () => ({ kind: "any", tags: ["t:x"] }) },
+	create: { operation: "create", call: (c, input, o) => c.create(input, o), input: (n) => ({ kind: "any", name: `made-${n}`, tags: [], body: n }) },
+	read: { operation: "read", call: (c, input, o) => c.read(input, o), input: () => ({ target: { kind: "any", name: "e1" } }) },
+};
+
+/**
+ * Preparations of a call in which one getter of the caller's spends `ms` on the call clock as it is read - the
+ * signal's, the bound's, the invocation's, or the input's first field's - naming `invocation`, or none when it
+ * is undefined, and the client's bound. `reads.n` counts the slow getter's reads.
+ */
+const slowGetters = (move, reads = { n: 0 }) => {
+	const slow = (ms, value) => { reads.n++; move(ms); return value; };
+	const named = (invocation) => (invocation === undefined ? {} : { invocation });
+	const slowFirst = (input, ms) => {
+		const [first] = Object.keys(input);
+		const value = input[first];
+		return Object.defineProperty({ ...input }, first, { get: () => slow(ms, value), enumerable: true });
+	};
+	return {
+		signal: (input, ms, invocation) => [input, { ...named(invocation), get signal() { return slow(ms, undefined); } }],
+		bound: (input, ms, invocation) => [input, { ...named(invocation), get bound() { return slow(ms, 10); } }],
+		invocation: (input, ms, invocation) => [input, { get invocation() { return slow(ms, invocation); } }],
+		input: (input, ms, invocation) => [slowFirst(input, ms), named(invocation)],
+	};
+};
+
+/** The ending a call whose bound passed with nothing sent is given, whole, as the call layer's caller gives it. */
+const passed = (operation, invocation, attempt) => ({ ending: "unknown", invocation, attempt, operation, reason: "bound-passed", agpCode: null, deliveryReport: null });
+
+test("findPage, a write and a read each read their clock as they are called: a slow signal, bound, invocation or input getter spending the bound, or leaving less than 1 ms, ends the call unknown at its bound, nothing handed to the call layer, under the identity given or a new one, with a new attempt identity of it", async (t) => {
+	const { topology, entry, store, pagesServed } = await setup(t, { count: 3 });
+	const ids = countingIdentities();
+	const client = clientOf(topology, "alice", { bound: 10, identities: ids.source });
+	const preparations = slowGetters((ms) => topology.hooks.moveCallClock(ms));
+	let n = 0;
+	for (const [name, single] of Object.entries(SINGLES)) {
+		for (const [what, prepare] of Object.entries(preparations)) {
+			for (const ms of [20, 10, 9.5]) {
+				for (const given of [ID, undefined]) {
+					const label = `${name}, a slow ${what} getter spending ${ms} of 10 ms, ${given === undefined ? "no identity given" : "the identity given"}`;
+					const invocation = given ?? `1791540000123-${ids.ahead(1, 16)}`;
+					const attempt = `${invocation}.${ids.ahead(given === undefined ? 2 : 1, 8)}`;
+					const ending = await within(single.call(client, ...prepare(single.input(++n), ms, given)));
+					assert.deepEqual(ending, passed(single.operation, invocation, attempt), label);
+					assert.deepEqual(Object.keys(ending), ["ending", "invocation", "attempt", "operation", "reason", "agpCode", "deliveryReport"], label);
+					assert.match(ending.attempt, ATTEMPT, `${label}: an attempt identity as EM11 writes it`);
+					assert.ok(Object.isFrozen(ending), label);
+					assert.equal(entry.calls.length, 0, `${label}: nothing handed to the call layer`);
+				}
+			}
+		}
+	}
+	assert.equal(pagesServed(), 0, "no page reached the store");
+	assert.equal(store.historyBound().answer.position, 3, "nothing was written");
+});
+
+test("findPage, a write and a read each spend from their bound the time a slow signal, bound, invocation or input getter takes: the call layer is given exactly the time left, rounded down, and its ending is returned unchanged", async (t) => {
+	const { topology, entry } = await setup(t, { count: 3 });
+	const client = clientOf(topology, "alice", { bound: 10 });
+	const reads = { n: 0 };
+	const preparations = slowGetters((ms) => topology.hooks.moveCallClock(ms), reads);
+	let n = 0;
+	for (const [name, single] of Object.entries(SINGLES)) {
+		for (const [what, prepare] of Object.entries(preparations)) {
+			for (const [ms, bound] of [[3.4, 6], [9, 1]]) {
+				for (const given of [entry.caller.newInvocation(), undefined]) {
+					const label = `${name}, a slow ${what} getter spending ${ms} of 10 ms, ${given === undefined ? "no identity given" : "the identity given"}`;
+					const before = entry.calls.length;
+					reads.n = 0;
+					const ending = await within(single.call(client, ...prepare(single.input(++n), ms, given)));
+					assert.equal(reads.n, 1, `${label}: the getter read once, into the snapshot the call layer is given`);
+					assert.equal(entry.calls.length, before + 1, `${label}: one invocation`);
+					const made = entry.calls.at(-1);
+					assert.deepEqual({ ...made, signal: undefined }, { host: "host-a", service: "store", operation: single.operation, input: single.input(n), bound, ...(given === undefined ? {} : { invocation: given }), signal: undefined }, label);
+					assert.equal(ending, await entry.endings.at(-1), `${label}: the call layer's ending, unchanged`);
+					assert.equal(ending.ending, "answered", label);
+					if (given !== undefined) assert.equal(ending.invocation, given, label);
+				}
+			}
+		}
+	}
+});
+
+test("a programming error a single call or a whole find finds once its bound has passed is still thrown, and nothing is sent", async (t) => {
+	const { topology, entry } = await setup(t, { count: 3 });
+	const client = clientOf(topology, "alice", { bound: 10 });
+	const late = () => topology.hooks.moveCallClock(20);
+	const cyclic = (input) => { const value = { ...input, get extra() { late(); return value; } }; return value; };
+	const errors = [
+		["a bound not whole", RangeError, (input) => [input, { get bound() { late(); return 1.5; } }]],
+		["a bound out of range", RangeError, (input) => [input, { bound: 0, get signal() { late(); return undefined; } }]],
+		["an invocation not as EM11 writes it", TypeError, (input) => [input, { get invocation() { late(); return "not-an-identity"; } }]],
+		["an input that is not a JSON value", TypeError, (input) => [{ ...input, get extra() { late(); return () => 1; } }, {}]],
+		["an input holding itself", TypeError, (input) => [cyclic(input), {}]],
+		["an input whose getter throws", TypeError, (input) => [{ ...input, get extra() { late(); throw new Error("a getter that throws"); } }, {}]],
+	];
+	const calls = { ...SINGLES, find: { call: (c, input, o) => c.find(input, o), input: () => ({ kind: "any" }) } };
+	let n = 0;
+	for (const [name, single] of Object.entries(calls)) {
+		for (const [what, type, prepare] of errors) await assert.rejects(single.call(client, ...prepare(single.input(++n))), type, `${name}, ${what}`);
+	}
+	await assert.rejects(client.create(SINGLES.create.input(++n), { repeat: "yes", get signal() { late(); return undefined; } }), TypeError, "a write's repeat flag that is not a boolean");
+	assert.equal(entry.calls.length, 0, "nothing was sent");
+});
+
+test("a whole find and findPage end bound-passed alike for the same slow signal, bound, invocation or input getter, the find with attempt null, findPage with a new attempt identity, under the identity given or a new one", async (t) => {
+	const { topology, entry } = await setup(t, { count: 3 });
+	const ids = countingIdentities();
+	const client = clientOf(topology, "alice", { bound: 10, identities: ids.source });
+	for (const [what, prepare] of Object.entries(slowGetters((ms) => topology.hooks.moveCallClock(ms)))) {
+		for (const given of [ID, undefined]) {
+			const label = `a slow ${what} getter, ${given === undefined ? "no identity given" : "the identity given"}`;
+			const wholeInvocation = given ?? `1791540000123-${ids.ahead(1, 16)}`;
+			const whole = await within(client.find(...prepare({ kind: "any" }, 20, given)));
+			assert.deepEqual(whole, passed("find", wholeInvocation, null), `the find, ${label}`);
+			const pageInvocation = given ?? `1791540000123-${ids.ahead(1, 16)}`;
+			const page = await within(client.findPage(...prepare({ kind: "any" }, 20, given)));
+			assert.deepEqual(page, passed("find", pageInvocation, `${pageInvocation}.${ids.ahead(0, 8)}`), `findPage, ${label}`);
+			assert.deepEqual({ ...whole, invocation: "", attempt: "" }, { ...page, invocation: "", attempt: "" }, `${label}: the same ending but for its identities`);
+		}
+	}
+	assert.equal(entry.calls.length, 0, "nothing was handed to the call layer");
 });
 
 test("time passing while the call layer prepares the first page, or a later one, is taken from that page's bound: the find ends unknown, no page is answered after its deadline, and nothing further is sent", async (t) => {

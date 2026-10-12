@@ -8,7 +8,8 @@
 // the call or the client names, and a write's invocation and repeat flag; the ending is the call layer's,
 // unchanged; each write's identity is its invocation identity, in the store's change log; any object offering
 // the caller's interface serves, as operation-proxy's client half does; and the client's programming errors
-// are thrown with nothing sent.
+// are thrown with nothing sent, each found by the client itself, as it reads the call (EM10), before the call
+// layer is reached.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createStoreClient } from "@apnex/entity-api";
@@ -134,6 +135,8 @@ test("the client's programming errors are thrown, and nothing is sent", async (t
 	await assert.rejects(client.find({ kind: "note" }, { invocation: "not-an-identity" }), TypeError);
 	await assert.rejects(client.find({ kind: "note", tags: [() => 1] }), TypeError);
 	await assert.rejects(client.read({ target: {} }, "fast"), TypeError);
-	assert.equal(entry.calls.length - before, 3, "only the calls the call layer itself refused to make reached it");
+	await assert.rejects(client.read({ target: [() => 1] }), TypeError);
+	await assert.rejects(client.update({ target: { id: "e1.1" } }, { repeat: "yes" }), TypeError);
+	assert.equal(entry.calls.length - before, 0, "the client checks every call's arguments itself, as it reads them, so none reached the call layer");
 	assert.equal(answerOf(await within(client.historyBound())).position, 0, "nothing was sent");
 });
