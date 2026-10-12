@@ -105,24 +105,6 @@ export interface StoreServer {
 /** Whether the store is served: operation-call's host refuses a name EM1's pattern does not allow. */
 export type StoreServing = { readonly served: true; readonly server: StoreServer } | { readonly served: false; readonly refusal: HostRefusal };
 
-/** True when a value has a `then` method; reading it is guarded, since a getter may throw. */
-function isThenable(value: unknown): value is PromiseLike<unknown> {
-	try {
-		return value !== null && (typeof value === "object" || typeof value === "function") && typeof (value as { then?: unknown }).then === "function";
-	} catch {
-		return false;
-	}
-}
-
-/** Consumes a thenable's outcome, so a rejection the application returned never goes unhandled. */
-function consume(value: PromiseLike<unknown>): void {
-	try {
-		Promise.resolve(value).catch(() => undefined);
-	} catch {
-		// A thenable whose then throws has no outcome to consume.
-	}
-}
-
 /** Reads a value's `then` once, guarded, since a getter may throw: its value, or what reading it threw. */
 function readThen(value: object): MemberRead {
 	try {
@@ -186,11 +168,18 @@ function rule(policy: ApplicationPolicy, question: PolicyQuestion): PolicyRuling
 	throw new TypeError("the application's policy ruled with neither { allowed: true } nor { allowed: false, refusal }");
 }
 
-/** Names the writer, checking what the application gave: a string, or null for none. */
+/**
+ * Names the writer, checking what the application gave: a string, or null for none. Anything else is thrown;
+ * an object or function given has its `then` read once, and one that is a function makes it a promise,
+ * observed through that function, so its rejection never goes unhandled (EM10, EM13).
+ */
 function nameFrom(nameWriter: WriterNaming, caller: CallerEvidence): string | null {
 	const writer: unknown = nameWriter(caller);
 	if (writer === null || typeof writer === "string") return writer;
-	if (isThenable(writer)) consume(writer);
+	if (typeof writer === "object" || typeof writer === "function") {
+		const then = readThen(writer);
+		if (!then.threw && typeof then.value === "function") observe(writer, then.value as (...handlers: unknown[]) => unknown);
+	}
 	throw new TypeError("the application's writer naming must give a string, or null when the evidence names no writer");
 }
 

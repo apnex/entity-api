@@ -7,7 +7,9 @@
 // input, and is asked for writes only; a client whose evidence is bob, sending a write that claims alice as
 // its writer, is refused and nothing is recorded; a writer naming that names no writer leaves the policy to
 // refuse; one that throws, gives something other than a string, or answers with a promise ends the invocation
-// unknown before the policy is asked, with nothing written; a repeat is recognised only from the writer that
+// unknown before the policy is asked, with nothing written; one giving an object with an own then getter,
+// giving a function or a non-function, has that then read exactly once, a function observed through it with
+// two handlers, and ends the same way, with no rejection unhandled; a repeat is recognised only from the writer that
 // made the change, since the writer is part of the digest; a repeated rename whose old name another agent
 // has since taken returns the first answer, with the first writer; the evidence reaches the writer naming as a
 // deeply frozen JSON snapshot, which it cannot change for the policy or a later request; and describe,
@@ -107,6 +109,37 @@ test("a writer naming that throws, gives anything but a string or null, or answe
 	assert.equal(policyAsked.length, 0);
 	assert.equal(store.historyBound().answer.position, 0);
 	await new Promise((resolve) => setTimeout(resolve, 20));
+});
+
+test("a writer naming giving an object with an own then getter, giving a function or a non-function, has that then read exactly once, a function observed through it with two handlers, and ends the invocation unknown before the policy is asked, with nothing written and no rejection unhandled", async (t) => {
+	const escaped = [];
+	const onUnhandled = (reason) => { escaped.push(reason); };
+	process.on("unhandledRejection", onUnhandled);
+	t.after(() => process.off("unhandledRejection", onUnhandled));
+	let reads = 0;
+	let observed = [];
+	/** The then getter: counts each read, and gives a function forwarding to a promise rejecting at once, or a string. */
+	const thenGetter = (gives) => function () {
+		reads++;
+		if (gives === "a non-function") return "not a function";
+		const rejected = Promise.reject(new Error("a writer naming's then getter's promise, rejecting at once"));
+		return (onFulfilled, onRejected) => { observed.push([typeof onFulfilled, typeof onRejected]); return rejected.then(onFulfilled, onRejected); };
+	};
+	let gives = "a function";
+	const nameWriter = () => Object.defineProperty({ writer: "alice" }, "then", { get: thenGetter(gives), enumerable: true, configurable: true });
+	const { clients: { alice }, policyAsked, store } = await setup(t, { callers: ["alice"], nameWriter });
+	for (gives of ["a function", "a non-function"]) {
+		reads = 0;
+		observed = [];
+		const ending = await within(alice.create(note("alpha")));
+		assert.equal(reads, 1, `then giving ${gives}: then read exactly once`);
+		assert.deepEqual([ending.ending, ending.reason, ending.agpCode], ["unknown", "operation-failed", null], `then giving ${gives}`);
+		assert.deepEqual(observed, gives === "a function" ? [["function", "function"]] : [], `then giving ${gives}: a function observed once, through the function read, with two handlers; anything else never called`);
+	}
+	assert.equal(policyAsked.length, 0, "the policy was never asked");
+	assert.equal(store.historyBound().answer.position, 0, "nothing was written");
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.deepEqual(escaped, [], "no rejection went unhandled");
 });
 
 test("a repeat is recognised only from the writer that made the change: the same invocation and input from another caller is refused as identity-reused", async (t) => {
