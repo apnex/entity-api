@@ -13,7 +13,9 @@
 // with its outcome consumed, nothing written, and the host serving on; a promise as the ruling's allowed, or
 // within its refusal, rejecting at once or later, for a create and a read, the same, in a child process with
 // no process-wide rejection handler; and the same for a promise met before a getter that throws, at the
-// ruling's top level, in a nested refusal object and in a refusal array member; the input, the evidence and the target
+// ruling's top level, in a nested refusal object and in a refusal array member; an own enumerable then
+// getter on the ruling, on a refusal and on a refusal member, giving a function and giving a non-function,
+// each read exactly once, a function observed through itself; the input, the evidence and the target
 // given as deeply frozen JSON snapshots, which the policy cannot change; describe, operation-call's own,
 // ruled on by no policy and naming no writer; and a policy's denial winning over a reused identity.
 import assert from "node:assert/strict";
@@ -307,6 +309,60 @@ test("the policy's ruling is read once, each field once, and its refusal passed 
 	assert.deepEqual([ending.ending, ending.refusal], ["refused", refusal]);
 	assert.deepEqual(reads, { then: 1, allowed: 1, refusal: 1 });
 	assert.equal(position(store), 0);
+});
+
+test("an own enumerable then getter on the ruling, on a refusal or on a refusal member is read exactly once: a function makes it a promise, observed through that function, ending the invocation unknown with operation-failed; anything else is read on as JSON, its then member taken from that one read", async (t) => {
+	const escaped = [];
+	const onUnhandled = (reason) => { escaped.push(reason); };
+	process.on("unhandledRejection", onUnhandled);
+	t.after(() => process.off("unhandledRejection", onUnhandled));
+	const NOT_A_FUNCTION = "not a function";
+	let reads = 0;
+	let observed = [];
+	/** The then getter: counts each read, and gives a function forwarding to a promise rejecting at once, or a string. */
+	const thenGetter = (gives) => function () {
+		reads++;
+		if (gives === "a non-function") return NOT_A_FUNCTION;
+		const rejected = Promise.reject(new Error("a then getter's promise, rejecting at once"));
+		return (onFulfilled, onRejected) => { observed.push([typeof onFulfilled, typeof onRejected]); return rejected.then(onFulfilled, onRejected); };
+	};
+	const withThen = (object, gives) => Object.defineProperty(object, "then", { get: thenGetter(gives), enumerable: true, configurable: true });
+	const refusal = () => policyRefusal("not-writer", { writer: "somebody" });
+	const RULINGS = {
+		"the ruling": (gives) => withThen({ allowed: false, refusal: refusal() }, gives),
+		"a refusal": (gives) => ({ allowed: false, refusal: withThen(refusal(), gives) }),
+		"a refusal member": (gives) => ({ allowed: false, refusal: policyRefusal("not-writer", { member: withThen({ kept: 1 }, gives) }) }),
+	};
+	// A refusal carrying a then member is not a refusal record, which has exactly EM9's six members, so it is
+	// another answer, ending the invocation operation-failed (EM13); null marks that ending.
+	const EXPECTED_REFUSAL = {
+		"the ruling": refusal(),
+		"a refusal": null,
+		"a refusal member": policyRefusal("not-writer", { member: { kept: 1, then: NOT_A_FUNCTION } }),
+	};
+	let ruling = () => ({ allowed: true });
+	const { clients: { alice }, store } = await setup(t, { callers: ["alice"], policy: () => ruling() });
+	for (const [where, rule] of Object.entries(RULINGS)) {
+		for (const gives of ["a function", "a non-function"]) {
+			for (const call of [() => alice.create(note("alpha")), () => alice.read({ target: { id: "e1.1" } })]) {
+				reads = 0;
+				observed = [];
+				ruling = () => rule(gives);
+				const ending = await within(call());
+				const what = `${where}, then giving ${gives}, ${ending.operation}`;
+				assert.equal(reads, 1, `${what}: then read exactly once`);
+				if (gives === "a function" || EXPECTED_REFUSAL[where] === null) {
+					assert.deepEqual([ending.ending, ending.reason, ending.agpCode], ["unknown", "operation-failed", null], what);
+				} else {
+					assert.deepEqual([ending.ending, ending.refusal], ["refused", EXPECTED_REFUSAL[where]], what);
+				}
+				assert.deepEqual(observed, gives === "a function" ? [["function", "function"]] : [], `${what}: a function observed once, through the function read, with two handlers; anything else never called`);
+			}
+		}
+	}
+	assert.equal(position(store), 0, "nothing was written");
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.deepEqual(escaped, [], "no rejection went unhandled");
 });
 
 test("describe, operation-call's own operation, is ruled on by no policy and names no writer", async (t) => {

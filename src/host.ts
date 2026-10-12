@@ -34,7 +34,7 @@ import {
 	type OperationResult,
 	type RefusalRecord,
 } from "@apnex/operation-call";
-import { frozenSnapshot, snapshotJson } from "./json.js";
+import { frozenSnapshot, snapshotJson, type Meeting, type MemberRead } from "./json.js";
 import { inputShape, isWrite, STORE_OPERATIONS, type StoreOperation, type WriteOperation } from "./store-operations.js";
 
 /** What the application's writer naming is given: the caller's evidence, and AGP's delivery context. */
@@ -123,34 +123,61 @@ function consume(value: PromiseLike<unknown>): void {
 	}
 }
 
+/** Reads a value's `then` once, guarded, since a getter may throw: its value, or what reading it threw. */
+function readThen(value: object): MemberRead {
+	try {
+		return { threw: false, value: (value as { then?: unknown }).then };
+	} catch (error) {
+		return { threw: true, error };
+	}
+}
+
+/** A handler that does nothing. */
+const ignore = (): void => undefined;
+
+/**
+ * Observes a promise through the `then` already read from it, called with two handlers that do nothing, so a
+ * rejection is consumed and `then` is not read again, as Promise.resolve would read it.
+ */
+function observe(value: object, then: (...handlers: unknown[]) => unknown): void {
+	try {
+		Reflect.apply(then, value, [ignore, ignore]);
+	} catch {
+		// A then that throws has no outcome to consume.
+	}
+}
+
 /**
  * Asks the policy and reads its ruling once, each field once (EM13). Anything but a synchronous ruling of the
  * declared form is the application's fault, thrown, so operation-call ends the invocation `failed` with
  * `operation-failed` and nothing is written. A promise met anywhere in reading the ruling - as the ruling, as
  * its `allowed`, as its refusal or within the refusal - has its outcome consumed as it is read, before anything
  * further is read, so a getter read later that throws cannot strand it; every one is consumed before the
- * ruling is refused, so none escapes to the host's runtime as an unhandled rejection; nothing is awaited. The
- * refusal is read once, whole, into a JSON copy equal to it, and that copy is what is passed on.
+ * ruling is refused, so none escapes to the host's runtime as an unhandled rejection; nothing is awaited. Each
+ * value's `then` is read once: one that is a function makes the value a promise, observed through it; any
+ * other is read on, and a refusal's or a refusal member's `then` member is taken from that one read (EM10).
+ * The refusal is read once, whole, into a JSON copy equal to it, and that copy is what is passed on.
  */
 function rule(policy: ApplicationPolicy, question: PolicyQuestion): PolicyRuling {
 	const ruling: unknown = policy(question);
-	if (isThenable(ruling)) {
-		consume(ruling);
+	let promised = false;
+	/** Reads an item's `then` once; a promise met in the ruling is observed, and the ruling then refused; its refusal is read all the same. */
+	const meet = (item: object): Meeting => {
+		const then = readThen(item);
+		if (then.threw || typeof then.value !== "function") return { taken: false, then };
+		observe(item, then.value as (...handlers: unknown[]) => unknown);
+		promised = true;
+		return { taken: true };
+	};
+	const isObject = (value: unknown): value is object => value !== null && (typeof value === "object" || typeof value === "function");
+	if (isObject(ruling) && meet(ruling).taken) {
 		throw new TypeError("the application's policy must rule synchronously, so no change lands between its ruling and the write (EM13)");
 	}
 	if (ruling === null || typeof ruling !== "object") throw new TypeError("the application's policy ruled with neither { allowed: true } nor { allowed: false, refusal }");
-	let promised = false;
-	/** Consumes a promise met in the ruling, which is then refused; its refusal is read all the same. */
-	const meet = (item: unknown): boolean => {
-		if (!isThenable(item)) return false;
-		consume(item);
-		promised = true;
-		return true;
-	};
 	// Each field is met as it is read, before the next is read, so a getter that throws later cannot leave a
 	// promise already read unconsumed.
 	const allowed: unknown = (ruling as { allowed?: unknown }).allowed;
-	meet(allowed);
+	if (isObject(allowed)) meet(allowed);
 	const refusal: unknown = (ruling as { refusal?: unknown }).refusal;
 	const copy = refusal === undefined ? undefined : snapshotJson(refusal, meet);
 	if (promised) throw new TypeError("the application's policy must rule synchronously, with no promise in its ruling (EM13)");

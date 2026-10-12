@@ -8,6 +8,15 @@
  * (zorg's BL19). Nothing here is particular to one runtime (zorg's D31).
  */
 
+/** A member read once: its value, or what reading it threw. */
+export type MemberRead = { readonly threw: false; readonly value: unknown } | { readonly threw: true; readonly error: unknown };
+
+/**
+ * What `meet` made of an object or function it was shown: taken, so it is not JSON and is not walked into; or
+ * passed, with its `then` as `meet` read it, from which the walk takes that member rather than reading it again.
+ */
+export type Meeting = { readonly taken: true } | { readonly taken: false; readonly then: MemberRead };
+
 /**
  * Reads a value once into a fresh JSON value, or gives undefined when it is not one: a function, a symbol,
  * undefined, a number that is not finite, an array with a hole, an object that is not plain, or a value
@@ -16,14 +25,16 @@
  * reference, while the containers still being copied are tracked apart, so a value holding itself is still
  * not JSON. A getter or a proxy that throws throws from here, for the caller of this function to contain.
  *
- * Given `meet`, every object and function the walk comes to is shown to it before it is judged - each member
- * as soon as it is read, before the next member is read, so a getter that throws later cannot strand an item
- * already read - and the walk goes on to the end, past whatever is not JSON, so nothing within the value goes unmet; an item `meet`
- * takes - answering true - is not JSON and is not walked into, and the snapshot is still undefined when any
- * part was not JSON. Without it, the walk stops at the first part that is not JSON.
+ * Given `meet`, every object and function the walk comes to is shown to it once, by identity, before it is
+ * judged - each member as soon as it is read, before the next member is read, so a getter that throws later
+ * cannot strand an item already read - and the walk goes on to the end, past whatever is not JSON, so nothing
+ * within the value goes unmet; an item `meet` takes is not JSON and is not walked into, and the snapshot is
+ * still undefined when any part was not JSON. An item `meet` passes is walked with its `then` member taken
+ * from what `meet` read, never read again (EM10, EM13). Without it, the walk stops at the first part that is
+ * not JSON.
  */
-export function snapshotJson(value: unknown, meet?: (item: object) => boolean): unknown {
-	interface Slot { readonly value: unknown; readonly store: (copy: unknown) => void; readonly met?: boolean }
+export function snapshotJson(value: unknown, meet?: (item: object) => Meeting): unknown {
+	interface Slot { readonly value: unknown; readonly store: (copy: unknown) => void }
 	interface Exit { readonly item: object; readonly copy: unknown; readonly depth: number }
 	let result: unknown;
 	const stack: Slot[] = [{ value, store: (copy) => { result = copy; } }];
@@ -34,6 +45,18 @@ export function snapshotJson(value: unknown, meet?: (item: object) => boolean): 
 	const exits: Exit[] = [];
 	// Set when a part is not JSON while `meet` keeps the walk going to the end.
 	let refused = false;
+	// What `meet` made of each item it was shown, so an item reached again is not shown, nor its `then` read, again.
+	const meetings = new Map<object, Meeting>();
+	/** Shows an item to `meet` the first time it is reached; undefined without `meet`. */
+	const meetOnce = (item: object): Meeting | undefined => {
+		if (meet === undefined) return undefined;
+		let meeting = meetings.get(item);
+		if (meeting === undefined) {
+			meeting = meet(item);
+			meetings.set(item, meeting);
+		}
+		return meeting;
+	};
 	while (stack.length > 0) {
 		// Every container whose members have all been copied leaves the open path and becomes done.
 		while (exits.length > 0 && (exits.at(-1) as Exit).depth >= stack.length) {
@@ -41,7 +64,7 @@ export function snapshotJson(value: unknown, meet?: (item: object) => boolean): 
 			open.delete(exit.item);
 			done.set(exit.item, exit.copy);
 		}
-		const { value: item, store, met } = stack.pop() as Slot;
+		const { value: item, store } = stack.pop() as Slot;
 		if (item === null || typeof item === "boolean" || typeof item === "string") {
 			store(item);
 			continue;
@@ -55,7 +78,8 @@ export function snapshotJson(value: unknown, meet?: (item: object) => boolean): 
 			store(item);
 			continue;
 		}
-		if (meet !== undefined && met !== true && (typeof item === "object" || typeof item === "function") && meet(item)) {
+		const meeting = typeof item === "object" || typeof item === "function" ? meetOnce(item) : undefined;
+		if (meeting?.taken === true) {
 			refused = true;
 			continue;
 		}
@@ -76,7 +100,7 @@ export function snapshotJson(value: unknown, meet?: (item: object) => boolean): 
 		const members: [string | number, unknown][] = [];
 		/** Holds a member just read, showing it to `meet` first, before any further member is read. */
 		const hold = (key: string | number, member: unknown): void => {
-			if (meet !== undefined && member !== null && (typeof member === "object" || typeof member === "function") && meet(member)) {
+			if (member !== null && (typeof member === "object" || typeof member === "function") && meetOnce(member)?.taken === true) {
 				refused = true;
 				return;
 			}
@@ -101,7 +125,12 @@ export function snapshotJson(value: unknown, meet?: (item: object) => boolean): 
 				refused = true;
 				continue;
 			}
-			for (const name of Object.keys(item)) hold(name, (item as { [name: string]: unknown })[name]);
+			for (const name of Object.keys(item)) {
+				// The `then` member as `meet` read it, when it did; it is not read again.
+				const then = name === "then" && meeting?.taken === false ? meeting.then : undefined;
+				if (then?.threw === true) throw then.error;
+				hold(name, then !== undefined ? then.value : (item as { [name: string]: unknown })[name]);
+			}
 			copy = {};
 		}
 		store(copy);
@@ -110,7 +139,7 @@ export function snapshotJson(value: unknown, meet?: (item: object) => boolean): 
 		const target = copy as { [key: string | number]: unknown };
 		for (let i = members.length - 1; i >= 0; i--) {
 			const [key, member] = members[i] as [string | number, unknown];
-			stack.push({ value: member, met: true, store: (c) => { Object.defineProperty(target, key, { value: c, enumerable: true, writable: true, configurable: true }); } });
+			stack.push({ value: member, store: (c) => { Object.defineProperty(target, key, { value: c, enumerable: true, writable: true, configurable: true }); } });
 		}
 	}
 	return refused ? undefined : result;
