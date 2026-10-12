@@ -1,55 +1,96 @@
 /**
- * Copies of JSON values: one read once into a fresh value, and one frozen whole, so what entity-api hands
- * an application's policy cannot change what the store is then given. Nothing here is particular to one
- * runtime (zorg's D31).
+ * Snapshots of JSON values: one read once into a fresh value, and one frozen whole, so what entity-api hands
+ * an application's policy cannot change what the store is then given, and what a whole find sends is what
+ * its caller gave when it was called (zorg's target, EM10, EM13). Every walk keeps its own stack rather than
+ * recursing, so a value of any depth a caller can build is walked to the end - an over-deep input then
+ * reaches the call layer, which refuses it as not sendable - instead of overflowing the runtime's call
+ * stack. This follows operation-call's `snapshotJson` and entity-store's walkers, without importing them
+ * (zorg's BL19). Nothing here is particular to one runtime (zorg's D31).
  */
 
 /**
- * Reads a value once into a fresh JSON value - each property read exactly once - or gives undefined when it
- * is not one: a function, a symbol, undefined, a number that is not finite, an object that is not plain, or
- * a cycle. An object reached by two paths is copied each time it is reached.
+ * Reads a value once into a fresh JSON value, or gives undefined when it is not one: a function, a symbol,
+ * undefined, a number that is not finite, an array with a hole, an object that is not plain, or a value
+ * holding itself. Each member is read exactly once: an object reached by more than one path is read the
+ * first time only, its completed copy kept by the object's identity and given again at every later
+ * reference, while the containers still being copied are tracked apart, so a value holding itself is still
+ * not JSON. A getter or a proxy that throws throws from here, for the caller of this function to contain.
  */
-export function copyJsonOnce(value: unknown, path: Set<object> = new Set()): unknown {
-	if (value === null || typeof value === "string" || typeof value === "boolean") return value;
-	if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
-	if (typeof value !== "object") return undefined;
-	if (path.has(value)) return undefined;
-	path.add(value);
-	try {
-		if (Array.isArray(value)) {
-			const copy: unknown[] = [];
-			for (let i = 0; i < value.length; i++) {
-				const item = copyJsonOnce(value[i], path);
-				if (item === undefined) return undefined;
-				copy.push(item);
+export function snapshotJson(value: unknown): unknown {
+	interface Slot { readonly value: unknown; readonly store: (copy: unknown) => void }
+	interface Exit { readonly item: object; readonly copy: unknown; readonly depth: number }
+	let result: unknown;
+	const stack: Slot[] = [{ value, store: (copy) => { result = copy; } }];
+	// The containers being copied above the current slot, so a value holding itself is found.
+	const open = new Set<object>();
+	// The containers whose copies are complete, so one reached again is given its first copy, not read again.
+	const done = new Map<object, unknown>();
+	const exits: Exit[] = [];
+	while (stack.length > 0) {
+		// Every container whose members have all been copied leaves the open path and becomes done.
+		while (exits.length > 0 && (exits.at(-1) as Exit).depth >= stack.length) {
+			const exit = exits.pop() as Exit;
+			open.delete(exit.item);
+			done.set(exit.item, exit.copy);
+		}
+		const { value: item, store } = stack.pop() as Slot;
+		if (item === null || typeof item === "boolean" || typeof item === "string") {
+			store(item);
+			continue;
+		}
+		if (typeof item === "number") {
+			if (!Number.isFinite(item)) return undefined;
+			store(item);
+			continue;
+		}
+		if (typeof item !== "object") return undefined;
+		if (done.has(item)) {
+			store(done.get(item));
+			continue;
+		}
+		if (open.has(item)) return undefined;
+		const members: [string | number, unknown][] = [];
+		let copy: unknown[] | { [name: string]: unknown };
+		if (Array.isArray(item)) {
+			const length = item.length;
+			for (let i = 0; i < length; i++) {
+				if (!(i in item)) return undefined;
+				members.push([i, item[i]]);
 			}
-			return copy;
+			copy = new Array<unknown>(length);
+		} else {
+			const prototype = Object.getPrototypeOf(item);
+			if (prototype !== Object.prototype && prototype !== null) return undefined;
+			for (const name of Object.keys(item)) members.push([name, (item as { [name: string]: unknown })[name]]);
+			copy = {};
 		}
-		const prototype = Object.getPrototypeOf(value);
-		if (prototype !== Object.prototype && prototype !== null) return undefined;
-		const copy: { [name: string]: unknown } = {};
-		for (const name of Object.keys(value)) {
-			const item = copyJsonOnce((value as { [name: string]: unknown })[name], path);
-			if (item === undefined) return undefined;
-			Object.defineProperty(copy, name, { value: item, enumerable: true, writable: true, configurable: true });
+		store(copy);
+		open.add(item);
+		exits.push({ item, copy, depth: stack.length });
+		const target = copy as { [key: string | number]: unknown };
+		for (let i = members.length - 1; i >= 0; i--) {
+			const [key, member] = members[i] as [string | number, unknown];
+			stack.push({ value: member, store: (c) => { Object.defineProperty(target, key, { value: c, enumerable: true, writable: true, configurable: true }); } });
 		}
-		return copy;
-	} finally {
-		path.delete(value);
 	}
+	return result;
 }
 
-/** A copy of a JSON value, frozen at every level. */
-export function frozenCopy<T>(value: T): T {
-	const copy = copyJsonOnce(value);
-	if (copy === undefined) throw new TypeError("a value entity-api copies must be a JSON value");
+/** A snapshot of a JSON value, frozen at every level; throws a TypeError when the value is not JSON. */
+export function frozenSnapshot<T>(value: T, what = "a value entity-api copies"): T {
+	const copy = snapshotJson(value);
+	if (copy === undefined) throw new TypeError(`${what} must be a JSON value`);
 	return deepFreeze(copy) as T;
 }
 
+/** Freezes a fresh JSON value at every level, with its own stack; a copy shared by two references is frozen once. */
 function deepFreeze(value: unknown): unknown {
-	if (value !== null && typeof value === "object") {
-		for (const item of Object.values(value)) deepFreeze(item);
-		Object.freeze(value);
+	const stack: unknown[] = [value];
+	while (stack.length > 0) {
+		const item = stack.pop();
+		if (item === null || typeof item !== "object" || Object.isFrozen(item)) continue;
+		Object.freeze(item);
+		for (const member of Object.values(item)) stack.push(member);
 	}
 	return value;
 }

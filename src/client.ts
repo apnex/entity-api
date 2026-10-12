@@ -30,7 +30,7 @@ import {
 	type UnknownEnding,
 } from "@apnex/operation-call";
 import { isInvocationId, NAME_PATTERN } from "@apnex/operation-call/message-format";
-import { copyJsonOnce } from "./json.js";
+import { snapshotJson } from "./json.js";
 import type { StoreOperation } from "./store-operations.js";
 
 /** What a client is built from. */
@@ -93,11 +93,44 @@ function checkBound(bound: unknown): number {
 	return bound;
 }
 
-/** Reads a call's options, which are an object or absent. */
-function optionsOf<O extends object>(options: O | undefined): Partial<O> {
+/**
+ * Reads a call's options, which are an object or absent, once, into a snapshot: each field the call takes -
+ * the bound, the invocation, the signal, and for a write the repeat flag - is read exactly once, now, and
+ * never again, so no getter of the caller's runs once the call is under way (EM10).
+ */
+function optionsOf(options: WriteOptions | undefined, repeatable: boolean): Partial<WriteOptions> {
 	if (options === undefined) return {};
 	if (options === null || typeof options !== "object") throw new TypeError("a call's options are an object: { bound, invocation, signal }");
-	return options;
+	const bound = options.bound;
+	const invocation = options.invocation;
+	const signal = options.signal;
+	const repeat = repeatable ? options.repeat : undefined;
+	return {
+		...(bound === undefined ? {} : { bound }),
+		...(invocation === undefined ? {} : { invocation }),
+		...(signal === undefined ? {} : { signal }),
+		...(repeat === undefined ? {} : { repeat }),
+	};
+}
+
+/** A page's answer as EM10 gives it, its fields read once, or undefined when the answer is not a page. */
+interface PageForm { readonly position: number; readonly entries: readonly JsonValue[]; readonly next: string | null }
+
+/**
+ * Recognises a page (EM10): an object holding a `position` that is a whole number, an `entries` array and a
+ * `next` that is a name or null. Each field, and each entry, is read once, so nothing of the answer is read
+ * after the find has read its clock.
+ */
+function pageOf(answer: unknown): PageForm | undefined {
+	if (answer === null || typeof answer !== "object" || Array.isArray(answer)) return undefined;
+	const { position, entries, next } = answer as { position?: unknown; entries?: unknown; next?: unknown };
+	if (typeof position !== "number" || !Number.isSafeInteger(position) || position < 0) return undefined;
+	if (!Array.isArray(entries)) return undefined;
+	if (next !== null && (typeof next !== "string" || !NAME_PATTERN.test(next))) return undefined;
+	const held: JsonValue[] = [];
+	const length = entries.length;
+	for (let i = 0; i < length; i++) held.push(entries[i] as JsonValue);
+	return { position, entries: held, next };
 }
 
 /** Builds a client of the store served under `service` on the host `host`. */
@@ -113,10 +146,15 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 	if (!clock || typeof clock.now !== "function") throw new TypeError("a client's clock offers now, as operation-call's call clock does");
 	if (!identities || typeof identities.wallTimeMs !== "function" || typeof identities.randomHex !== "function") throw new TypeError("a client's identities offer wallTimeMs and randomHex");
 
+	// The caller's invoke and the clock's now are read once, here, so no getter of theirs runs between a
+	// page's clock reading and its invocation (EM10).
+	const callerInvoke = caller.invoke;
+	const clockNow = clock.now;
+
 	/** One invocation of an operation; the caller checks the arguments and throws for a programming error. */
 	const invoke = (operation: StoreOperation, input: JsonInput, given: Partial<WriteOptions>, repeatable: boolean): Promise<CallEnding> => {
 		const bound = given.bound ?? options.bound;
-		return caller.invoke({
+		return callerInvoke.call(caller, {
 			host,
 			service,
 			operation,
@@ -130,7 +168,7 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 
 	/** Reads the deadline's clock; a reading that is not a finite number is a fault of the port. */
 	const now = (): number => {
-		const reading = clock.now();
+		const reading: unknown = clockNow.call(clock);
 		if (typeof reading !== "number" || !Number.isFinite(reading)) throw new TypeError(`the client's clock read ${String(reading)}, not a finite number of milliseconds`);
 		return reading;
 	};
@@ -145,57 +183,71 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 	};
 
 	/**
-	 * The whole find of EM10. One deadline from the moment it is called; each page invoked with the time left,
-	 * rounded down to a whole millisecond, as its bound; no page sent with less than 1 millisecond left; the
-	 * first page under the identity given, or a new one, each later page under a new identity, as of the first
-	 * page's position and after the last page's `next`.
+	 * The whole find of EM10. Its input and options are read once, into a snapshot, and only then is its clock
+	 * read for the one deadline; each page is invoked with the time left, read immediately before that page is
+	 * invoked and rounded down to a whole millisecond, as its bound, so no getter of the caller's runs between
+	 * that reading and the invocation; no page is sent with less than 1 millisecond left, and no page is taken
+	 * once the deadline has passed. The first page goes under the identity given, or a new one, each later page
+	 * under a new identity, as of the first page's position and after the last page's `next`. A page whose
+	 * answer is not a page ends the find answered with that answer unchanged.
 	 */
 	const find = async (input: JsonInput, call?: CallOptions): Promise<FindEnding> => {
-		const start = now();
-		const given = optionsOf(call);
+		const given = optionsOf(call, false);
 		const bound = checkBound(given.bound ?? options.bound);
 		if (given.invocation !== undefined && !isInvocationId(given.invocation)) throw new TypeError("a call's invocation must be an invocation identity as EM11 writes it");
-		const query = copyJsonOnce(input);
+		let query: unknown;
+		try {
+			query = snapshotJson(input);
+		} catch (error) {
+			throw new TypeError("a find's input could not be read as a JSON value", { cause: error });
+		}
 		if (query === undefined) throw new TypeError("a find's input must be a JSON value");
-		const deadline = start + bound;
+		const deadline = now() + bound;
 		let first: { readonly invocation: string; readonly attempt: string } | undefined;
-		let position: JsonValue | undefined;
+		let position: number | undefined;
 		const entries: JsonValue[] = [];
-		let page: JsonInput = query as JsonInput;
+		let page = query as JsonInput;
+		const boundPassed = (): FindEnding => Object.freeze({
+			ending: "unknown", invocation: first?.invocation ?? given.invocation ?? newInvocation(), attempt: first?.attempt ?? null,
+			operation: "find", reason: "bound-passed", agpCode: null, deliveryReport: null,
+		});
 		for (;;) {
 			const left = deadline - now();
-			if (left < 1) {
-				return Object.freeze({
-					ending: "unknown", invocation: first?.invocation ?? given.invocation ?? newInvocation(), attempt: first?.attempt ?? null,
-					operation: "find", reason: "bound-passed", agpCode: null, deliveryReport: null,
-				});
-			}
-			const ending = await invoke("find", page, { bound: Math.floor(left), ...(first === undefined && given.invocation !== undefined ? { invocation: given.invocation } : {}), ...(given.signal === undefined ? {} : { signal: given.signal }) }, false);
+			if (left < 1) return boundPassed();
+			const request = {
+				host, service, operation: "find", input: page, bound: Math.floor(left),
+				...(first === undefined && given.invocation !== undefined ? { invocation: given.invocation } : {}),
+				...(given.signal === undefined ? {} : { signal: given.signal }),
+			};
+			// The page's ending, its fields read once.
+			const ending = { ...(await callerInvoke.call(caller, request)) } as CallEnding;
 			first ??= { invocation: ending.invocation, attempt: ending.attempt };
 			if (ending.ending !== "answered") return Object.freeze({ ...ending, invocation: first.invocation, attempt: first.attempt });
-			const answer = ending.answer as { position?: JsonValue; entries?: unknown; next?: unknown } | null;
-			if (answer === null || typeof answer !== "object" || !Array.isArray(answer.entries)) return Object.freeze({ ...ending, invocation: first.invocation, attempt: first.attempt });
-			position ??= answer.position as JsonValue;
-			entries.push(...(answer.entries as JsonValue[]));
-			if (typeof answer.next !== "string") {
+			const form = pageOf(ending.answer);
+			// An answer taken once the deadline has passed loses to it, as EM12 has a call's bound win.
+			if (now() >= deadline) return boundPassed();
+			if (form === undefined) return Object.freeze({ ...ending, invocation: first.invocation, attempt: first.attempt });
+			position ??= form.position;
+			for (const entry of form.entries) entries.push(entry);
+			if (form.next === null) {
 				return Object.freeze({
 					ending: "answered", invocation: first.invocation, attempt: first.attempt, operation: "find",
-					answer: Object.freeze({ position: position as JsonValue, entries: Object.freeze(entries) as unknown as JsonValue[] }),
+					answer: Object.freeze({ position, entries: Object.freeze(entries) as unknown as JsonValue[] }),
 				});
 			}
-			page = { ...(query as { [name: string]: JsonValue }), asOf: position as JsonValue, after: answer.next };
+			page = { ...(query as { [name: string]: JsonValue }), asOf: position, after: form.next };
 		}
 	};
 
 	return Object.freeze({
 		host,
 		service,
-		create: async (input: JsonInput, o?: WriteOptions) => invoke("create", input, optionsOf(o), true),
-		update: async (input: JsonInput, o?: WriteOptions) => invoke("update", input, optionsOf(o), true),
-		delete: async (input: JsonInput, o?: WriteOptions) => invoke("delete", input, optionsOf(o), true),
-		read: async (input: JsonInput, o?: CallOptions) => invoke("read", input, optionsOf(o), false),
-		findPage: async (input: JsonInput, o?: CallOptions) => invoke("find", input, optionsOf(o), false),
+		create: async (input: JsonInput, o?: WriteOptions) => invoke("create", input, optionsOf(o, true), true),
+		update: async (input: JsonInput, o?: WriteOptions) => invoke("update", input, optionsOf(o, true), true),
+		delete: async (input: JsonInput, o?: WriteOptions) => invoke("delete", input, optionsOf(o, true), true),
+		read: async (input: JsonInput, o?: CallOptions) => invoke("read", input, optionsOf(o, false), false),
+		findPage: async (input: JsonInput, o?: CallOptions) => invoke("find", input, optionsOf(o, false), false),
 		find,
-		historyBound: async (o?: CallOptions) => invoke("history-bound", {}, optionsOf(o), false),
+		historyBound: async (o?: CallOptions) => invoke("history-bound", {}, optionsOf(o, false), false),
 	});
 }

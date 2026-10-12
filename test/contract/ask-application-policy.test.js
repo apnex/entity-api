@@ -7,8 +7,12 @@
 // store - observed step by step for a create, an update, a delete, a recognised repeat and a reused identity;
 // no change lands between a ruling and its write; a denial is returned unchanged and takes no position, for
 // every operation; zorg's rule as a fixture application, end to end; a repeated rename whose old name another
-// agent has since taken; and a policy that throws, rules asynchronously, rules in another form, or allows a
-// write no writer was named for, each ending the invocation unknown with nothing written.
+// agent has since taken; a policy that throws, rules asynchronously, rules in another form, or allows a
+// write no writer was named for, each ending the invocation unknown with nothing written; the ruling's fields
+// each read once, and a refusal that is a promise, rejecting at once or later, ending the invocation unknown
+// with its outcome consumed, nothing written, and the host serving on; the input, the evidence and the target
+// given as deeply frozen JSON snapshots, which the policy cannot change; describe, operation-call's own,
+// ruled on by no policy and naming no writer; and a policy's denial winning over a reused identity.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { openTopology, within } from "../support/topology.js";
@@ -52,6 +56,8 @@ test("the policy is asked before each of the six operations, with the operation,
 	for (const q of questions) {
 		assert.deepEqual(Object.keys(q).sort(), ["delivery", "evidence", "input", "operation", "repeat", "target", "writer"]);
 		assert.ok(Object.isFrozen(q) && Object.isFrozen(q.input), "the question and its input are frozen, so the policy cannot change what the store is given");
+		assert.ok(Object.isFrozen(q.evidence), "the evidence is frozen");
+		if (q.target !== null) assert.ok(Object.isFrozen(q.target) && Object.isFrozen(q.target.body) && Object.isFrozen(q.target.created), "the target is frozen at every level");
 	}
 });
 
@@ -183,4 +189,102 @@ test("a policy that allows a write for which the writer naming named no writer e
 	assert.deepEqual([ending.ending, ending.reason], ["unknown", "operation-failed"]);
 	assert.deepEqual([questions[0].writer, questions[0].repeat], [null, false]);
 	assert.equal(position(store), 0);
+});
+
+test("the input, the evidence and the target reach the policy as deeply frozen JSON snapshots: no change the policy tries reaches the store, the entity or a later request", async (t) => {
+	const topology = await openTopology({ callers: ["alice"] });
+	t.after(() => topology.close());
+	const opened = openStore();
+	const failures = [];
+	const attempt = (what, change) => { try { change(); failures.push(`${what}: changed`); } catch (error) { failures.push(`${what}: ${error.constructor.name}`); } };
+	const seen = [];
+	await serve(topology, {
+		store: opened.store,
+		evidence: (delivery) => ({ kind: "test-node", node: delivery.source.originNodeId, session: { roles: ["writer"], since: 1 } }),
+		policy: (q) => {
+			seen.push(JSON.parse(JSON.stringify(q.evidence)));
+			attempt("input", () => { q.input.body.summary = "forged"; });
+			attempt("input tags", () => { q.input.tags.push("t:forged"); });
+			attempt("evidence", () => { q.evidence.node = "mallory"; });
+			attempt("nested evidence", () => { q.evidence.session.roles.push("admin"); });
+			if (q.target !== null) {
+				attempt("target", () => { q.target.created.writer = "mallory"; });
+				attempt("nested target", () => { q.target.body.summary = "forged"; });
+			}
+			return { allowed: true };
+		},
+	});
+	const alice = clientOf(topology, "alice");
+	const made = answerOf(await within(alice.create(note("alpha", ["t:x"]))));
+	assert.deepEqual([made.entity.body, made.entity.tags], [note("alpha").body, ["t:x"]], "the store was given the input as sent");
+	const updated = answerOf(await within(alice.update({ target: { id: "e1.1" }, tags: ["t:y"], body: { summary: "two" } })));
+	assert.deepEqual([updated.entity.created.writer, updated.entity.tags, updated.entity.body.summary], ["alice", ["t:y"], "two"], "the store was given the update as sent, over the entity as it stood");
+	const frozen = ["input", "input tags", "evidence", "nested evidence"].map((f) => `${f}: TypeError`);
+	assert.deepEqual(failures, [...frozen, ...frozen, "target: TypeError", "nested target: TypeError"], "every change the policy tried was refused by the freezing");
+	assert.deepEqual(seen[1], { kind: "test-node", node: "alice", session: { roles: ["writer"], since: 1 } }, "a later request's evidence is its own, unchanged");
+});
+
+test("a refusal that is a promise, rejecting at once or later, ends the invocation unknown with operation-failed: its outcome is consumed, nothing is written, the host serves on, and no process-wide handler is installed", async (t) => {
+	const handlers = process.listenerCount("unhandledRejection");
+	const rejectLater = () => new Promise((_resolve, reject) => setTimeout(() => reject(new Error("a refusal rejecting later")), 10));
+	const rulings = [
+		() => ({ allowed: false, refusal: Promise.reject(new Error("a refusal rejecting at once")) }),
+		() => ({ allowed: false, refusal: rejectLater() }),
+		() => ({ allowed: true, refusal: Promise.reject(new Error("an allowed ruling's promised refusal")) }),
+		() => ({ allowed: false, refusal: Promise.resolve(policyRefusal("not-writer", {})) }),
+	];
+	let which = -1;
+	const { clients: { alice }, store, log } = await setup(t, { callers: ["alice"], policy: (q) => (which < 0 ? { allowed: true } : rulings[which](q)) });
+	for (which = 0; which < rulings.length; which++) {
+		for (const call of [() => alice.create(note(`n${which}`)), () => alice.read({ target: { id: "e1.1" } })]) {
+			const ending = await within(call());
+			assert.deepEqual([ending.ending, ending.reason, ending.agpCode], ["unknown", "operation-failed", null], `ruling ${which}, ${ending.operation}`);
+		}
+	}
+	assert.equal(position(store), 0, "nothing was written");
+	assert.ok(!log.includes("create") && !log.includes("read"), "the store was asked nothing but the repeat check");
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	which = -1;
+	assert.equal(answerOf(await within(alice.create(note("after")))).position, 1, "the host serves on");
+	assert.equal(process.listenerCount("unhandledRejection"), handlers, "no process-wide rejection handler was left installed");
+});
+
+test("the policy's ruling is read once, each field once, and its refusal passed on unchanged", async (t) => {
+	const refusal = policyRefusal("not-writer", { writer: "somebody" });
+	const reads = { then: 0, allowed: 0, refusal: 0 };
+	const { clients: { alice }, store } = await setup(t, { callers: ["alice"], policy: () => ({
+		get then() { reads.then++; return undefined; },
+		get allowed() { reads.allowed++; return reads.allowed === 1 ? false : true; },
+		get refusal() { reads.refusal++; return reads.refusal === 1 ? refusal : undefined; },
+	}) });
+	const ending = await within(alice.create(note("alpha")));
+	assert.deepEqual([ending.ending, ending.refusal], ["refused", refusal]);
+	assert.deepEqual(reads, { then: 1, allowed: 1, refusal: 1 });
+	assert.equal(position(store), 0);
+});
+
+test("describe, operation-call's own operation, is ruled on by no policy and names no writer", async (t) => {
+	const { topology, log } = await setup(t, { callers: ["alice"] });
+	log.length = 0;
+	const ending = await within(topology.caller("alice").caller.invoke({ host: "host-a", service: "store", operation: "describe", input: {}, bound: 5000 }));
+	assert.equal(answerOf(ending).service, "store");
+	assert.deepEqual(log, [], "neither the policy, the writer naming nor the store was asked");
+});
+
+test("a retained write identity with another digest is no recognised repeat: the policy rules on it as a fresh write, and its denial wins over the store's identity-reused", async (t) => {
+	const refusal = policyRefusal("not-writer", { writer: "somebody" });
+	let deny = false;
+	const { clients: { alice }, store, log, questions } = await setup(t, { callers: ["alice"], policy: () => (deny ? { allowed: false, refusal } : { allowed: true }) });
+	const made = await within(alice.create(note("alpha")));
+	answerOf(made);
+	deny = true;
+	log.length = 0;
+	const denied = await within(alice.update({ target: { id: "e1.1" }, name: "beta" }, { invocation: made.invocation }));
+	assert.deepEqual([denied.ending, denied.refusal], ["refused", refusal], "the policy's refusal, not identity-reused");
+	assert.deepEqual(log, ["writer", "checkRepeat", "read", "policy"], "the target was resolved, the policy ruled, and the store was not written");
+	assert.deepEqual([questions.at(-1).repeat, questions.at(-1).target.name], [false, "alpha"]);
+	assert.equal(position(store), 1, "no position taken");
+	deny = false;
+	const allowed = await within(alice.update({ target: { id: "e1.1" }, name: "beta" }, { invocation: made.invocation }));
+	assert.deepEqual([allowed.refusal.part, allowed.refusal.code], ["entity-store", "identity-reused"], "allowed, the write meets the store's identity-reused");
 });

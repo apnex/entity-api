@@ -38,9 +38,26 @@ export function within(promise, what = "the ending", ms = 120_000) {
 	return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
+/** An identity source of fresh identities that runs `hooks.attempt(n)` as a caller makes its nth attempt identity, while preparing its nth call. */
+export function preparingIdentities() {
+	let made = 0;
+	let attempts = 0;
+	const hooks = {};
+	const source = {
+		wallTimeMs: () => 1791540000000 + made,
+		randomHex(digits) {
+			made++;
+			if (digits === 8) hooks.attempt?.(++attempts);
+			return made.toString(16).padStart(digits, "0");
+		},
+	};
+	return { hooks, source };
+}
+
 /**
  * Opens the topology. Options: callers, the names of the caller nodes made at once (more can be added);
- * realCallClock, to bound calls on operation-call's system call clock; wrapHostNode(node), to give a host's
+ * realCallClock, to bound calls on operation-call's system call clock; identities, the identity source every
+ * caller makes its invocation and attempt identities from; wrapHostNode(node), to give a host's
  * operations a wrapped node, as zorg's hub wraps its own node's send to drop answers in tests (RT9).
  */
 export async function openTopology(options = {}) {
@@ -104,7 +121,7 @@ export async function openTopology(options = {}) {
 			},
 		};
 		await node.start();
-		const caller = await createCaller({ node: sendingNode, clock: callClock });
+		const caller = await createCaller({ node: sendingNode, clock: callClock, ...(options.identities ? { identities: options.identities } : {}) });
 		// Every call the caller is asked for, as asked - what the client half gave the call layer - and its ending.
 		const recorder = {
 			invoke(call) { calls.push(call); const ending = caller.invoke(call); endings.push(ending); return ending; },

@@ -8,8 +8,10 @@
 // its writer, is refused and nothing is recorded; a writer naming that names no writer leaves the policy to
 // refuse; one that throws, gives something other than a string, or answers with a promise ends the invocation
 // unknown before the policy is asked, with nothing written; a repeat is recognised only from the writer that
-// made the change, since the writer is part of the digest; and a repeated rename whose old name another agent
-// has since taken returns the first answer, with the first writer.
+// made the change, since the writer is part of the digest; a repeated rename whose old name another agent
+// has since taken returns the first answer, with the first writer; the evidence reaches the writer naming as a
+// deeply frozen JSON snapshot, which it cannot change for the policy or a later request; and describe,
+// operation-call's own, names no writer.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { openTopology, within } from "../support/topology.js";
@@ -128,4 +130,35 @@ test("a repeated rename whose old name another agent has since taken returns the
 	assert.equal(repeat.answer.entity.changed.writer, "alice");
 	assert.deepEqual(changes(storage).map((c) => c.writer), ["alice", "alice", "bob"], "the repeat recorded nothing");
 	assert.equal(store.read({ target: { kind: "note", name: "old" } }).answer.entity.created.writer, "bob");
+});
+
+test("the evidence reaches the writer naming as a deeply frozen JSON snapshot: a change it tries is refused, and the policy and a later request see the evidence as given", async (t) => {
+	const topology = await openTopology({ callers: ["alice"] });
+	t.after(() => topology.close());
+	const opened = openStore();
+	const tried = [];
+	const policySaw = [];
+	await serve(topology, {
+		store: opened.store,
+		evidence: (delivery) => ({ node: delivery.source.originNodeId, session: { principal: delivery.source.originNodeId, claims: ["a"] } }),
+		nameWriter: ({ evidence }) => {
+			for (const change of [() => { evidence.node = "mallory"; }, () => { evidence.session.principal = "mallory"; }, () => { evidence.session.claims.push("b"); }]) {
+				try { change(); tried.push("changed"); } catch (error) { tried.push(error.constructor.name); }
+			}
+			return evidence.session.principal;
+		},
+		policy: (q) => { policySaw.push(JSON.parse(JSON.stringify(q.evidence))); return { allowed: true }; },
+	});
+	const alice = clientOf(topology, "alice");
+	assert.equal(answerOf(await within(alice.create(note("alpha")))).entity.created.writer, "alice");
+	answerOf(await within(alice.update({ target: { id: "e1.1" }, name: "beta" })));
+	assert.deepEqual(tried, ["TypeError", "TypeError", "TypeError", "TypeError", "TypeError", "TypeError"]);
+	assert.deepEqual(policySaw, [0, 1].map(() => ({ node: "alice", session: { principal: "alice", claims: ["a"] } })));
+});
+
+test("describe, operation-call's own operation, names no writer", async (t) => {
+	const { topology, named, policyAsked } = await setup(t, { callers: ["alice"] });
+	const ending = await within(topology.caller("alice").caller.invoke({ host: "host-a", service: "store", operation: "describe", input: {}, bound: 5000 }));
+	assert.equal(answerOf(ending).service, "store");
+	assert.deepEqual([named.length, policyAsked.length], [0, 0]);
 });

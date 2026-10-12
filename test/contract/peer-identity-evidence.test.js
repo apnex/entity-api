@@ -1,17 +1,18 @@
 // peer-identity-evidence (carried from operation-call) - the application's policy check receives the caller's
 // evidence (zorg's target, EM11, EM13; zorg's D26, D31; E5).
 //
-// Cases: the policy and the writer naming each receive the evidence function's own answer for the request,
-// unchanged, and AGP's delivery context as AGP gave it to the evidence function, naming the caller's node as
-// the origin; an evidence function answering asynchronously is awaited; with no evidence function the evidence
-// is null and the delivery context still arrives; and an evidence function that fails ends the invocation
-// unknown with operation-failed before the writer naming or the policy is asked.
+// Cases: the policy and the writer naming each receive the evidence function's answer for the request, read
+// once into one deeply frozen JSON snapshot equal to it, and AGP's delivery context as AGP gave it to the
+// evidence function, naming the caller's node as the origin; an evidence function answering asynchronously is
+// awaited; with no evidence function the evidence is null and the delivery context still arrives; an evidence
+// function that fails, and evidence that is not a JSON value, end the invocation unknown with operation-failed
+// before the writer naming or the policy is asked.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { within } from "../support/topology.js";
 import { answerOf, note, served } from "../support/serving.js";
 
-test("the policy and the writer naming receive the evidence function's own answer, and AGP's delivery context as the evidence function was given it", async (t) => {
+test("the policy and the writer naming receive the evidence function's answer, as one deeply frozen JSON snapshot of it, and AGP's delivery context as the evidence function was given it", async (t) => {
 	const given = [];
 	const answers = [];
 	const policySaw = [];
@@ -30,10 +31,12 @@ test("the policy and the writer naming receive the evidence function's own answe
 	answerOf(await within(bob.read({ target: { id: "e1.1" } })));
 	assert.equal(policySaw.length, 2);
 	for (const [i, q] of policySaw.entries()) {
-		assert.equal(q.evidence, answers[i], "the evidence function's own answer");
+		assert.deepEqual(q.evidence, answers[i], "the evidence function's answer");
+		assert.notEqual(q.evidence, answers[i], "a snapshot of it, not the object the application holds");
+		assert.ok(Object.isFrozen(q.evidence), "frozen");
 		assert.equal(q.delivery, given[i], "the delivery context the evidence function was given");
 	}
-	assert.equal(writerSaw[0].evidence, answers[0]);
+	assert.equal(writerSaw[0].evidence, policySaw[0].evidence, "the writer naming and the policy share one snapshot");
 	assert.equal(writerSaw[0].delivery, given[0]);
 	assert.deepEqual(policySaw.map((q) => [q.delivery.source.originNodeId, q.delivery.source.endpoint, q.delivery.destination]), [["alice", "operation-call/replies", "store/create"], ["bob", "operation-call/replies", "store/read"]]);
 	assert.deepEqual(policySaw.map((q) => q.evidence.principal), ["alice", "bob"]);
@@ -73,6 +76,35 @@ test("an evidence function that fails ends the invocation unknown with operation
 	for (const call of [() => alice.create(note("alpha")), () => alice.read({ target: { id: "e1.1" } })]) {
 		const ending = await within(call());
 		assert.deepEqual([ending.ending, ending.reason, ending.agpCode], ["unknown", "operation-failed", null]);
+	}
+	assert.deepEqual(asked, []);
+	assert.equal(store.historyBound().answer.position, 0);
+});
+
+test("evidence that is not a JSON value, or that cannot be read, ends the invocation unknown with operation-failed, before the writer naming or the policy is asked", async (t) => {
+	const asked = [];
+	const cyclic = { node: "alice" };
+	cyclic.self = cyclic;
+	const answers = [
+		() => new Date(0),
+		() => ({ node: "alice", at: () => 0 }),
+		() => cyclic,
+		() => ({ node: "alice", n: Number.NaN }),
+		() => ({ get node() { throw new Error("a getter that throws"); } }),
+		() => ({ node: "alice", nested: [1, undefined] }),
+	];
+	let which = 0;
+	const { clients: { alice }, store } = await served(t, {
+		callers: ["alice"],
+		evidence: () => answers[which](),
+		nameWriter: () => { asked.push("writer"); return "alice"; },
+		policy: () => { asked.push("policy"); return { allowed: true }; },
+	});
+	for (which = 0; which < answers.length; which++) {
+		for (const call of [() => alice.create(note("alpha")), () => alice.read({ target: { id: "e1.1" } })]) {
+			const ending = await within(call());
+			assert.deepEqual([ending.ending, ending.reason, ending.agpCode], ["unknown", "operation-failed", null], `evidence ${which}, ${ending.operation}`);
+		}
 	}
 	assert.deepEqual(asked, []);
 	assert.equal(store.historyBound().answer.position, 0);

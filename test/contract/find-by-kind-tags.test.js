@@ -7,9 +7,17 @@
 // refused, not delivered and unknown; the first page under the identity given and every later page under a new
 // one, none marked a repeat; the JSON of a successful two-page find; finds as of positions 0, the current one,
 // one below 0 and one above the current one; duplicate tags in a find; and a find by kind and tags.
+// After the first verification (EM10 as revised): the find's input and options read once, into a snapshot,
+// before its clock - time passing in their getters, and in the first and a later page's preparation, and a
+// final page that cannot be accepted; deep JSON, cycles, aliases and getters in a whole find's input; the
+// abort signal reaching every page; and a page whose answer is not a page, first or later, ending the find
+// answered with that answer unchanged under the first page's invocation and attempt.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { openTopology, until, within } from "../support/topology.js";
+import { createStoreClient } from "@apnex/entity-api";
+import { createOperationHost } from "@apnex/operation-call";
+import { openTopology, preparingIdentities, until, within } from "../support/topology.js";
+import { createManualCallClock } from "../support/manual-call-clock.js";
 import { answerOf, clientOf, nodeEvidence, note, openStore, serve, T0 } from "../support/serving.js";
 
 const PAD = 200_000;
@@ -19,8 +27,8 @@ const ID = "1791540000000-0123456789abcdef";
  * A store of `count` entities of kind `any`, about 200 KB each, so a page holds two, served on host-a; hooks
  * run before and after the store answers each page, the nth page's hook by its number.
  */
-async function setup(t, { count = 5, historyMs = 60_000, policy, evidence = nodeEvidence, bound = 1000 } = {}) {
-	const topology = await openTopology({ callers: ["alice"] });
+async function setup(t, { count = 5, historyMs = 60_000, policy, evidence = nodeEvidence, bound = 1000, identities } = {}) {
+	const topology = await openTopology({ callers: ["alice"], ...(identities ? { identities } : {}) });
 	t.after(() => topology.close());
 	const opened = openStore({ maxEntityBytes: 262_144, historyMs });
 	for (let i = 1; i <= count; i++) opened.store.create({ kind: "any", name: `e${i}`, tags: ["t:x"], body: { pad: "x".repeat(PAD) } }, { writer: "seed", writeId: `seed-${i}` });
@@ -211,7 +219,6 @@ test("a find returns every entity of its kind carrying every tag it names, and d
 });
 
 test("a whole find answers with its first page's position and every page's entries in order, whatever a later page states, through any caller offering the call layer's interface", async () => {
-	const { createStoreClient } = await import("@apnex/entity-api");
 	const pages = [
 		{ position: 5, entries: [{ name: "a" }], next: "a" },
 		{ position: 9, entries: [{ name: "b" }, { name: "c" }], next: "c" },
@@ -229,4 +236,165 @@ test("a whole find answers with its first page's position and every page's entri
 	const ending = await client.find({ kind: "any" }, { invocation: ID });
 	assert.deepEqual(ending, { ending: "answered", invocation: ID, attempt: `${ID}.00000001`, operation: "find", answer: { position: 5, entries: [{ name: "a" }, { name: "b" }, { name: "c" }] } });
 	assert.deepEqual(asked.map((c) => [c.input, c.bound, c.invocation]), [[{ kind: "any" }, 1000, ID], [{ kind: "any", asOf: 5, after: "a" }, 1000, undefined], [{ kind: "any", asOf: 5, after: "c" }, 1000, undefined]]);
+});
+
+/** A caller answering each page with the given answers in turn, through a manual clock; `during[n]` runs as the nth page is answered. */
+function scriptedCaller(answers, during = {}) {
+	const asked = [];
+	return {
+		asked,
+		caller: {
+			async invoke(call) {
+				asked.push(call);
+				const n = asked.length;
+				during[n]?.(call);
+				const invocation = call.invocation ?? `179154000000${n}-0123456789abcdef`;
+				return Object.freeze({ ending: "answered", invocation, attempt: `${invocation}.0000000${n}`, operation: "find", answer: answers[n - 1] });
+			},
+		},
+	};
+}
+
+test("the find reads its input and options once, into a snapshot, and only then its clock: time passing in their getters takes nothing from its pages' bounds", async (t) => {
+	const { client, entry, topology } = await setup(t, { count: 3 });
+	const reads = { bound: 0, invocation: 0, signal: 0, kind: 0 };
+	const signal = new AbortController().signal;
+	const options = {
+		get bound() { reads.bound++; topology.hooks.moveCallClock(300); return 1000; },
+		get invocation() { reads.invocation++; topology.hooks.moveCallClock(300); return ID; },
+		get signal() { reads.signal++; topology.hooks.moveCallClock(300); return signal; },
+	};
+	const input = { get kind() { reads.kind++; topology.hooks.moveCallClock(300); return "any"; } };
+	const ending = await within(client.find(input, options));
+	assert.deepEqual(names(answerOf(ending).entries), ["e1", "e2", "e3"]);
+	assert.deepEqual(reads, { bound: 1, invocation: 1, signal: 1, kind: 1 }, "each getter read once");
+	assert.deepEqual(entry.calls.map((p) => p.bound), [1000, 1000], "the deadline starts once the snapshot is taken");
+	assert.deepEqual(entry.calls.map((p) => [p.input.kind, p.signal === signal]), [["any", true], ["any", true]]);
+	assert.equal(ending.invocation, ID);
+});
+
+test("time passing while the call layer prepares the first page, or a later one, is taken from that page's bound: the find ends unknown, no page is answered after its deadline, and nothing further is sent", async (t) => {
+	for (const page of [1, 2]) {
+		const { source, hooks } = preparingIdentities();
+		const { client, entry, topology, pagesServed } = await setup(t, { count: 3, identities: source });
+		hooks.attempt = (n) => { if (n === page) topology.hooks.moveCallClock(1000); };
+		const ending = await within(client.find({ kind: "any" }, { invocation: ID }));
+		const endings = await Promise.all(entry.endings);
+		assert.equal(entry.calls.length, page, `page ${page}: invoked`);
+		assert.deepEqual([endings[page - 1].ending, endings[page - 1].reason], ["unknown", "bound-passed"], `page ${page} ended at its bound`);
+		assert.equal(pagesServed(), page - 1, `page ${page} was never sent`);
+		assert.deepEqual(ending, { ...endings[page - 1], invocation: ID, attempt: endings[0].attempt });
+	}
+});
+
+test("time passing while a later page is prepared from the last page's answer is read before that page's bound", async () => {
+	const clock = createManualCallClock(0);
+	const reads = { position: 0, entries: 0, next: 0 };
+	const first = {
+		get position() { reads.position++; clock.move(100); return 4; },
+		get entries() { reads.entries++; clock.move(100); return [{ name: "a" }]; },
+		get next() { reads.next++; clock.move(100.5); return "a"; },
+	};
+	const { caller, asked } = scriptedCaller([first, { position: 4, entries: [{ name: "b" }], next: null }]);
+	const client = createStoreClient({ caller, host: "host-a", service: "store", bound: 1000, clock });
+	const ending = await client.find({ kind: "any" }, { invocation: ID });
+	assert.deepEqual(answerOf(ending), { position: 4, entries: [{ name: "a" }, { name: "b" }] });
+	assert.deepEqual(reads, { position: 1, entries: 1, next: 1 }, "each field of the answer read once");
+	assert.deepEqual(asked.map((c) => c.bound), [1000, 699], "the later page given only what was left after its preparation");
+});
+
+test("a final page that cannot be accepted - its answer coming once the find's deadline has passed - ends the find unknown at its bound, not answered", async (t) => {
+	const { client, entry, topology, after } = await setup(t, { count: 3 });
+	after[2] = () => topology.hooks.moveCallClock(1000);
+	const ending = await within(client.find({ kind: "any" }, { invocation: ID }));
+	const [firstPage, second] = await Promise.all(entry.endings);
+	assert.deepEqual([second.ending, second.reason], ["unknown", "bound-passed"], "the call layer did not take the final page's answer");
+	assert.deepEqual(ending, { ...second, invocation: ID, attempt: firstPage.attempt });
+
+	const clock = createManualCallClock(0);
+	const { caller, asked } = scriptedCaller([{ position: 4, entries: [{ name: "a" }], next: "a" }, { position: 4, entries: [], next: null }], { 2: () => clock.move(1000) });
+	const late = await createStoreClient({ caller, host: "host-a", service: "store", bound: 1000, clock }).find({ kind: "any" }, { invocation: ID });
+	assert.equal(asked.length, 2);
+	assert.deepEqual(late, { ending: "unknown", invocation: ID, attempt: `${ID}.00000001`, operation: "find", reason: "bound-passed", agpCode: null, deliveryReport: null }, "a caller answering after the deadline is not taken");
+});
+
+test("a whole find's input is read as the call layer reads it: deep JSON reaches the call layer, which refuses it as not sendable; a cycle or a getter that throws is a programming error, nothing sent; an object reached twice and its getters are read once", async (t) => {
+	const { client, entry, pagesServed } = await setup(t, { count: 1 });
+	let deep = 0;
+	for (let i = 0; i < 10_000; i++) deep = [deep];
+	let deepObject = {};
+	for (let i = 0; i < 10_000; i++) deepObject = { d: deepObject };
+	for (const extra of [deep, deepObject]) {
+		const before = entry.calls.length;
+		const ending = await within(client.find({ kind: "any", extra }, { invocation: ID }));
+		const page = await entry.endings[before];
+		assert.deepEqual([ending.ending, ending.refusal.part, ending.refusal.code], ["refused", "operation-call", "not-sendable"]);
+		assert.deepEqual(ending, { ...page, invocation: ID });
+		const single = await within(client.findPage({ kind: "any", extra }, { invocation: ID }));
+		assert.deepEqual({ ...ending, attempt: null }, { ...single, attempt: null }, "as a single page is refused");
+	}
+	assert.equal(pagesServed(), 0, "nothing reached the host");
+	const cyclic = { kind: "any" };
+	cyclic.self = cyclic;
+	const calls = entry.calls.length;
+	await assert.rejects(client.find(cyclic), TypeError);
+	await assert.rejects(client.find({ get kind() { throw new Error("a getter that throws"); } }), TypeError);
+	assert.equal(entry.calls.length, calls, "nothing sent");
+
+	let reads = 0;
+	const shared = { get x() { return ++reads; } };
+	const { caller, asked } = scriptedCaller([{ position: 0, entries: [], next: null }]);
+	await createStoreClient({ caller, host: "host-a", service: "store", bound: 1000, clock: { now: () => 0 } }).find({ kind: "any", a: shared, b: [shared, shared] });
+	assert.equal(reads, 1, "the shared object's getter read once");
+	assert.deepEqual(asked[0].input, { kind: "any", a: { x: 1 }, b: [{ x: 1 }, { x: 1 }] });
+});
+
+test("the abort signal a find is given reaches each of its pages: aborted between pages, the next page is not delivered and the find ends as it did", async (t) => {
+	const { client, entry, after } = await setup(t, { count: 5 });
+	const signal = new AbortController().signal;
+	answerOf(await within(client.find({ kind: "any" }, { signal })));
+	assert.equal(entry.calls.length, 3);
+	assert.ok(entry.calls.every((p) => p.signal === signal), "every page given the find's signal");
+	const controller = new AbortController();
+	after[4] = () => controller.abort();
+	const ending = await within(client.find({ kind: "any" }, { signal: controller.signal, invocation: ID }));
+	const endings = await Promise.all(entry.endings.slice(3));
+	assert.equal(endings.length, 2, "no page after the aborted one");
+	assert.equal(endings[1].ending, "not-delivered");
+	assert.deepEqual(ending, { ...endings[1], invocation: ID, attempt: endings[0].attempt });
+});
+
+test("a page whose answer is not a page, first or later, ends the find answered with that page's answer unchanged, under the first page's invocation and attempt", async (t) => {
+	const topology = await openTopology({ callers: ["alice"] });
+	t.after(() => topology.close());
+	const opened = await createOperationHost(topology.hostNodes.get("host-a"), { service: "pages" });
+	let script = [];
+	let served = 0;
+	await opened.host.declare({ name: "find", input: { $schema: "urn:apnex:shape-check:dialect:1" }, answers: "whole" }, () => ({ outcome: "answered", answer: script[served++] }));
+	await topology.hooks.ready("host-a", "pages/find");
+	const entry = topology.caller("alice");
+	const client = clientOf(topology, "alice", { service: "pages", bound: 1000 });
+	const malformed = [
+		{ entries: [{ name: "x" }], next: null },
+		{ position: 4, entries: [{ name: "x" }] },
+		{ position: 4, entries: [], next: 42 },
+		{ position: 4, entries: [], next: false },
+		{ position: -1, entries: [], next: null },
+		{ position: 4.5, entries: [], next: null },
+		{ position: 4, entries: {}, next: null },
+		{ position: 4, entries: [], next: "Not a name" },
+		[],
+		null,
+	];
+	for (const later of [false, true]) {
+		for (const answer of malformed) {
+			script = later ? [{ position: 4, entries: [{ name: "a" }], next: "a" }, answer] : [answer];
+			served = 0;
+			const before = entry.calls.length;
+			const ending = await within(client.find({ kind: "any" }, { invocation: ID }));
+			const pages = await Promise.all(entry.endings.slice(before));
+			assert.equal(pages.length, later ? 2 : 1, JSON.stringify(answer));
+			assert.deepEqual(ending, { ending: "answered", invocation: ID, attempt: pages[0].attempt, operation: "find", answer }, `${later ? "a later" : "the first"} page answering ${JSON.stringify(answer)}`);
+		}
+	}
 });

@@ -34,13 +34,16 @@ import {
 	type OperationResult,
 	type RefusalRecord,
 } from "@apnex/operation-call";
-import { frozenCopy } from "./json.js";
+import { frozenSnapshot } from "./json.js";
 import { inputShape, isWrite, STORE_OPERATIONS, type StoreOperation, type WriteOperation } from "./store-operations.js";
 
 /** What the application's writer naming is given: the caller's evidence, and AGP's delivery context. */
 export interface CallerEvidence {
-	/** The answer of the evidence function the host was given - in zorg, caller-identity's record - or null. */
-	readonly evidence: unknown;
+	/**
+	 * The answer of the evidence function the host was given - in zorg, caller-identity's record - or null, as a
+	 * deeply frozen JSON snapshot read once; evidence that is not a JSON value ends the invocation failed (EM13).
+	 */
+	readonly evidence: JsonValue;
 	/** AGP's delivery context for the request, as AGP gave it (`peer-identity-evidence`). */
 	readonly delivery: DeliveryContext;
 }
@@ -54,15 +57,15 @@ export type WriterNaming = (caller: CallerEvidence) => string | null;
 /** What the application's policy is asked before each operation (`ask-application-policy`). */
 export interface PolicyQuestion {
 	readonly operation: StoreOperation;
-	/** The input as received, a frozen copy. */
+	/** The input as received, a deeply frozen JSON snapshot. */
 	readonly input: JsonValue;
-	/** The caller's evidence, as the evidence function answered it, or null (`peer-identity-evidence`). */
-	readonly evidence: unknown;
+	/** The caller's evidence, as the evidence function answered it, or null, the same deeply frozen JSON snapshot the writer naming was given (`peer-identity-evidence`). */
+	readonly evidence: JsonValue;
 	/** AGP's delivery context for the request, as AGP gave it. */
 	readonly delivery: DeliveryContext;
 	/** The writer the application named, for a write; null for a read, or when no writer was named. */
 	readonly writer: string | null;
-	/** The entity an update or delete names, a frozen copy, when it is not a recognised repeat and names one; otherwise null. */
+	/** The entity an update or delete names, a deeply frozen JSON snapshot, when it is not a recognised repeat and names one; otherwise null. */
 	readonly target: EntityEnvelope | null;
 	/** True when the write is a recognised repeat (EM7), which returns the first answer if allowed. */
 	readonly repeat: boolean;
@@ -121,9 +124,10 @@ function consume(value: PromiseLike<unknown>): void {
 }
 
 /**
- * Asks the policy and reads its ruling once. Anything but a synchronous ruling of the declared form is the
- * application's fault, thrown, so operation-call ends the invocation `failed` with `operation-failed` and
- * nothing is written.
+ * Asks the policy and reads its ruling once, each field once (EM13). Anything but a synchronous ruling of the
+ * declared form is the application's fault, thrown, so operation-call ends the invocation `failed` with
+ * `operation-failed` and nothing is written. A promise, as the ruling or as its refusal, is consumed before
+ * it is refused, so its outcome never escapes to the host's runtime as an unhandled rejection.
  */
 function rule(policy: ApplicationPolicy, question: PolicyQuestion): PolicyRuling {
 	const ruling: unknown = policy(question);
@@ -132,9 +136,13 @@ function rule(policy: ApplicationPolicy, question: PolicyQuestion): PolicyRuling
 		throw new TypeError("the application's policy must rule synchronously, so no change lands between its ruling and the write (EM13)");
 	}
 	if (ruling === null || typeof ruling !== "object") throw new TypeError("the application's policy ruled with neither { allowed: true } nor { allowed: false, refusal }");
-	const allowed = (ruling as { allowed?: unknown }).allowed;
+	const { allowed, refusal } = ruling as { allowed?: unknown; refusal?: unknown };
+	if (isThenable(refusal)) {
+		consume(refusal);
+		throw new TypeError("the application's policy must refuse synchronously, with a refusal record, not a promise of one (EM13)");
+	}
 	if (allowed === true) return { allowed: true };
-	if (allowed === false) return { allowed: false, refusal: (ruling as { refusal: RefusalRecord }).refusal };
+	if (allowed === false) return { allowed: false, refusal: refusal as RefusalRecord };
 	throw new TypeError("the application's policy ruled with neither { allowed: true } nor { allowed: false, refusal }");
 }
 
@@ -168,17 +176,17 @@ export async function serveStore(options: StoreServerOptions): Promise<StoreServ
 	/** Resolves the target of an update or delete to the entity it names, if any (EM13, step 3). */
 	const resolve = (input: JsonValue): EntityEnvelope | null => {
 		const read = store.read({ target: (input as { target: { id?: string; kind?: string; name?: string } }).target });
-		return read.outcome === "answered" && read.answer.entity !== null ? frozenCopy(read.answer.entity) : null;
+		return read.outcome === "answered" && read.answer.entity !== null ? frozenSnapshot(read.answer.entity, "the target's envelope") : null;
 	};
 
 	/** A write, in EM13's synchronous order; nothing in it awaits. */
-	const write = (operation: WriteOperation, input: JsonValue, context: OperationContext): OperationResult => {
-		const writer = nameFrom(nameWriter, Object.freeze({ evidence: context.evidence, delivery: context.delivery }));
+	const write = (operation: WriteOperation, input: JsonValue, context: OperationContext, evidence: JsonValue): OperationResult => {
+		const writer = nameFrom(nameWriter, Object.freeze({ evidence, delivery: context.delivery }));
 		const identity: WriteContext | undefined = writer === null ? undefined : { writer, writeId: context.invocation };
 		const check: RepeatCheck = identity === undefined ? { repeat: "none" } : store.checkRepeat(operation, input as never, identity);
 		const repeat = check.repeat === "recognised";
 		const target = repeat || operation === "create" ? null : resolve(input);
-		const ruling = rule(policy, Object.freeze({ operation, input: frozenCopy(input), evidence: context.evidence, delivery: context.delivery, writer, target, repeat }));
+		const ruling = rule(policy, Object.freeze({ operation, input: frozenSnapshot(input, "an operation's input"), evidence, delivery: context.delivery, writer, target, repeat }));
 		if (!ruling.allowed) return { outcome: "refused", refusal: ruling.refusal };
 		if (check.repeat === "recognised") return { outcome: "answered", answer: check.answer as unknown as JsonValue };
 		if (identity === undefined) throw new Error("the application's policy allowed a write for which its writer naming named no writer, so there is no writer to record");
@@ -190,8 +198,8 @@ export async function serveStore(options: StoreServerOptions): Promise<StoreServ
 	};
 
 	/** A read, a find or history-bound: the policy rules, then the store answers. */
-	const answer = (operation: Exclude<StoreOperation, WriteOperation>, input: JsonValue, context: OperationContext): OperationResult => {
-		const ruling = rule(policy, Object.freeze({ operation, input: frozenCopy(input), evidence: context.evidence, delivery: context.delivery, writer: null, target: null, repeat: false }));
+	const answer = (operation: Exclude<StoreOperation, WriteOperation>, input: JsonValue, context: OperationContext, evidence: JsonValue): OperationResult => {
+		const ruling = rule(policy, Object.freeze({ operation, input: frozenSnapshot(input, "an operation's input"), evidence, delivery: context.delivery, writer: null, target: null, repeat: false }));
 		if (!ruling.allowed) return { outcome: "refused", refusal: ruling.refusal };
 		switch (operation) {
 			case "read": return result(store.read(input as never));
@@ -202,7 +210,13 @@ export async function serveStore(options: StoreServerOptions): Promise<StoreServ
 
 	try {
 		for (const operation of STORE_OPERATIONS) {
-			const handler = (input: JsonValue, context: OperationContext): OperationResult => isWrite(operation) ? write(operation, input, context) : answer(operation, input, context);
+			const handler = (input: JsonValue, context: OperationContext): OperationResult => {
+				// The request's evidence, read once into a deeply frozen JSON snapshot that the writer naming and the
+				// policy share; evidence that is not a JSON value is the application's defect, thrown, so the
+				// invocation ends `failed` with `operation-failed` before either is asked (EM13).
+				const evidence = frozenSnapshot(context.evidence, "the request's evidence") as JsonValue;
+				return isWrite(operation) ? write(operation, input, context, evidence) : answer(operation, input, context, evidence);
+			};
 			const declared = await host.declare({ name: operation, input: inputShape(operation) as JsonValue, answers: "whole" }, handler);
 			if (!declared.declared) throw new Error(`operation-call refused to declare ${operation}: ${declared.refusal.code}; this is a defect of entity-api`);
 		}
