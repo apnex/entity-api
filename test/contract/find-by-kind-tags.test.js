@@ -20,6 +20,10 @@
 // layer, under the identity given or a new one and a new attempt identity of it; spending part of the bound, it
 // leaves the call layer exactly the time left, rounded down; a programming error found once the bound has
 // passed is still thrown; and the find and findPage end alike for the same preparation, but for their attempts.
+// A reading of entity-api's own clock that throws as a page's answer is accepted (EM12, EM10), over the real
+// caller - at a first, a final and a malformed page, each throw counted - ending as the answer observed
+// decides, and one throwing before a later page is sent thrown, as before; with a healthy clock, an answer
+// accepted at the deadline or after it losing, and one just before it taken.
 // An abort signal given that is not one (EM12, EM10) - null, one without aborted, one whose aborted is not a
 // boolean - is thrown as a TypeError by findPage, a write, a read and the whole find, with time left and once a
 // slow invocation getter has spent the bound, nothing handed to the call layer; a genuine signal and none given
@@ -604,5 +608,130 @@ test("a page whose answer is not a page, first or later, ends the find answered 
 			assert.equal(pages.length, later ? 2 : 1, JSON.stringify(answer));
 			assert.deepEqual(ending, { ending: "answered", invocation: ID, attempt: pages[0].attempt, operation: "find", answer }, `${later ? "a later" : "the first"} page answering ${JSON.stringify(answer)}`);
 		}
+	}
+});
+
+/**
+ * A store of three entities, two pages, served as `store`, and a host answering `pages/find` with the answers
+ * of `script` in turn, served as `pages`, each on host-a of its own topology, called through the real
+ * operation-call caller of alice.
+ */
+async function acceptanceHosts(t) {
+	const { topology, entry } = await setup(t, { count: 3 });
+	const pagesTopology = await openTopology({ callers: ["alice"] });
+	t.after(() => pagesTopology.close());
+	const opened = await createOperationHost(pagesTopology.hostNodes.get("host-a"), { service: "pages" });
+	const pages = { script: [], served: 0 };
+	await opened.host.declare({ name: "find", input: { $schema: "urn:apnex:shape-check:dialect:1" }, answers: "whole" }, () => ({ outcome: "answered", answer: pages.script[pages.served++] }));
+	await pagesTopology.hooks.ready("host-a", "pages/find");
+	return { store: { topology, entry }, pages: { topology: pagesTopology, entry: pagesTopology.caller("alice"), script: (answers) => { pages.script = answers; pages.served = 0; } } };
+}
+
+/**
+ * A whole find's client over the real caller of `entry`, with entity-api's own clock reading the topology's call
+ * clock but for its readings once page `page` has answered: the first `faults` of them throw, each counted, and
+ * then, given `at`, the next reads `at` ms after the find began.
+ */
+function acceptanceClient({ topology, entry }, service, { page, faults = 0, at }) {
+	const manual = topology.manualClock;
+	const counts = { faults: 0 };
+	let start;
+	let answered = 0;
+	let throwing = 0;
+	let reading;
+	const clock = {
+		now() {
+			if (throwing > 0) {
+				throwing--;
+				counts.faults++;
+				throw new Error("entity-api's clock, reading once a page has answered");
+			}
+			if (reading !== undefined) {
+				const late = reading;
+				reading = undefined;
+				return late;
+			}
+			const now = manual.now();
+			start ??= now;
+			return now;
+		},
+		schedule: (delay, callback) => manual.schedule(delay, callback),
+	};
+	const caller = {
+		async invoke(call) {
+			const ending = await entry.caller.invoke(call);
+			if (++answered === page) {
+				throwing = faults;
+				if (at !== undefined) reading = start + at;
+			}
+			return ending;
+		},
+	};
+	return { client: createStoreClient({ caller, host: "host-a", service, bound: 1000, clock }), counts };
+}
+
+test("a reading of entity-api's clock that throws as a first, a final or a malformed page's answer is accepted cannot show the deadline passed: the answer observed decides, under the first page's invocation and attempt; one that throws before a later page is sent is thrown, as before", async (t) => {
+	const hosts = await acceptanceHosts(t);
+	const { entry } = hosts.store;
+	for (const page of [1, 2]) {
+		const before = entry.calls.length;
+		const { client, counts } = acceptanceClient(hosts.store, "store", { page, faults: 1 });
+		const ending = await within(client.find({ kind: "any" }, { invocation: ID }));
+		const pages = await Promise.all(entry.endings.slice(before));
+		const what = page === 1 ? "the first page" : "the final page";
+		assert.equal(counts.faults, 1, `${what}: the reading threw once`);
+		assert.deepEqual(pages.map((p) => p.ending), ["answered", "answered"], `${what}: both pages answered`);
+		assert.deepEqual(entry.calls.slice(before).map((c) => c.bound), [1000, 1000], `${what}: the later page prepared as before`);
+		assert.equal(ending.ending, "answered", `${what}: ${JSON.stringify(ending)}`);
+		assert.deepEqual([ending.invocation, ending.attempt, ending.answer.position], [ID, pages[0].attempt, pages[0].answer.position], what);
+		assert.deepEqual(names(ending.answer.entries), ["e1", "e2", "e3"], what);
+	}
+
+	hosts.pages.script([{ position: 4, entries: [{ name: "x" }] }]);
+	const malformed = acceptanceClient(hosts.pages, "pages", { page: 1, faults: 1 });
+	const before = hosts.pages.entry.calls.length;
+	const ending = await within(malformed.client.find({ kind: "any" }, { invocation: ID }));
+	const [first] = await Promise.all(hosts.pages.entry.endings.slice(before));
+	assert.equal(malformed.counts.faults, 1, "a malformed page: the reading threw once");
+	assert.deepEqual(ending, { ending: "answered", invocation: ID, attempt: first.attempt, operation: "find", answer: { position: 4, entries: [{ name: "x" }] } }, "a malformed page: its answer unchanged");
+
+	const sent = entry.calls.length;
+	const preparing = acceptanceClient(hosts.store, "store", { page: 1, faults: 2 });
+	await assert.rejects(preparing.client.find({ kind: "any" }, { invocation: ID }), /reading once a page has answered/);
+	assert.equal(preparing.counts.faults, 2, "the acceptance reading and the later page's reading both threw");
+	assert.equal(entry.calls.length, sent + 1, "no later page was sent");
+});
+
+test("with a healthy clock, a first, a final or a malformed page's answer accepted at the find's deadline, or after it, still loses: the find ends unknown at its bound under the first page's invocation and attempt; just before it, the answer is taken", async (t) => {
+	const hosts = await acceptanceHosts(t);
+	const { entry } = hosts.store;
+	const passed = (attempt) => ({ ending: "unknown", invocation: ID, attempt, operation: "find", reason: "bound-passed", agpCode: null, deliveryReport: null });
+	for (const page of [1, 2]) {
+		for (const at of [1000, 1500, 999.5]) {
+			const before = entry.calls.length;
+			const { client } = acceptanceClient(hosts.store, "store", { page, at });
+			const ending = await within(client.find({ kind: "any" }, { invocation: ID }));
+			const pages = await Promise.all(entry.endings.slice(before));
+			const what = `${page === 1 ? "the first page" : "the final page"} accepted ${at} ms after the find began`;
+			if (at < 1000) {
+				assert.equal(ending.ending, "answered", what);
+				assert.deepEqual([ending.attempt, names(ending.answer.entries)], [pages[0].attempt, ["e1", "e2", "e3"]], what);
+				continue;
+			}
+			assert.equal(pages.length, page, `${what}: no page after it`);
+			assert.equal(pages[page - 1].ending, "answered", `${what}: the call layer answered`);
+			assert.deepEqual(ending, passed(pages[0].attempt), what);
+		}
+	}
+	for (const at of [1000, 1500, 999.5]) {
+		hosts.pages.script([{ position: 4, entries: [{ name: "x" }] }]);
+		const before = hosts.pages.entry.calls.length;
+		const { client } = acceptanceClient(hosts.pages, "pages", { page: 1, at });
+		const ending = await within(client.find({ kind: "any" }, { invocation: ID }));
+		const [first] = await Promise.all(hosts.pages.entry.endings.slice(before));
+		assert.equal(first.ending, "answered");
+		assert.deepEqual(ending, at < 1000
+			? { ending: "answered", invocation: ID, attempt: first.attempt, operation: "find", answer: { position: 4, entries: [{ name: "x" }] } }
+			: passed(first.attempt), `a malformed page accepted ${at} ms after the find began`);
 	}
 });

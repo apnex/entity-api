@@ -16,13 +16,14 @@
  * reference, while the containers still being copied are tracked apart, so a value holding itself is still
  * not JSON. A getter or a proxy that throws throws from here, for the caller of this function to contain.
  *
- * Given `meet`, every object and function the walk comes to is shown to it before it is judged, and the walk
- * goes on to the end, past whatever is not JSON, so nothing within the value goes unmet; an item `meet`
+ * Given `meet`, every object and function the walk comes to is shown to it before it is judged - each member
+ * as soon as it is read, before the next member is read, so a getter that throws later cannot strand an item
+ * already read - and the walk goes on to the end, past whatever is not JSON, so nothing within the value goes unmet; an item `meet`
  * takes - answering true - is not JSON and is not walked into, and the snapshot is still undefined when any
  * part was not JSON. Without it, the walk stops at the first part that is not JSON.
  */
 export function snapshotJson(value: unknown, meet?: (item: object) => boolean): unknown {
-	interface Slot { readonly value: unknown; readonly store: (copy: unknown) => void }
+	interface Slot { readonly value: unknown; readonly store: (copy: unknown) => void; readonly met?: boolean }
 	interface Exit { readonly item: object; readonly copy: unknown; readonly depth: number }
 	let result: unknown;
 	const stack: Slot[] = [{ value, store: (copy) => { result = copy; } }];
@@ -40,7 +41,7 @@ export function snapshotJson(value: unknown, meet?: (item: object) => boolean): 
 			open.delete(exit.item);
 			done.set(exit.item, exit.copy);
 		}
-		const { value: item, store } = stack.pop() as Slot;
+		const { value: item, store, met } = stack.pop() as Slot;
 		if (item === null || typeof item === "boolean" || typeof item === "string") {
 			store(item);
 			continue;
@@ -54,7 +55,7 @@ export function snapshotJson(value: unknown, meet?: (item: object) => boolean): 
 			store(item);
 			continue;
 		}
-		if (meet !== undefined && (typeof item === "object" || typeof item === "function") && meet(item)) {
+		if (meet !== undefined && met !== true && (typeof item === "object" || typeof item === "function") && meet(item)) {
 			refused = true;
 			continue;
 		}
@@ -73,6 +74,14 @@ export function snapshotJson(value: unknown, meet?: (item: object) => boolean): 
 			continue;
 		}
 		const members: [string | number, unknown][] = [];
+		/** Holds a member just read, showing it to `meet` first, before any further member is read. */
+		const hold = (key: string | number, member: unknown): void => {
+			if (meet !== undefined && member !== null && (typeof member === "object" || typeof member === "function") && meet(member)) {
+				refused = true;
+				return;
+			}
+			members.push([key, member]);
+		};
 		let copy: unknown[] | { [name: string]: unknown };
 		if (Array.isArray(item)) {
 			const length = item.length;
@@ -82,7 +91,7 @@ export function snapshotJson(value: unknown, meet?: (item: object) => boolean): 
 					refused = true;
 					continue;
 				}
-				members.push([i, item[i]]);
+				hold(i, item[i]);
 			}
 			copy = new Array<unknown>(length);
 		} else {
@@ -92,7 +101,7 @@ export function snapshotJson(value: unknown, meet?: (item: object) => boolean): 
 				refused = true;
 				continue;
 			}
-			for (const name of Object.keys(item)) members.push([name, (item as { [name: string]: unknown })[name]]);
+			for (const name of Object.keys(item)) hold(name, (item as { [name: string]: unknown })[name]);
 			copy = {};
 		}
 		store(copy);
@@ -101,7 +110,7 @@ export function snapshotJson(value: unknown, meet?: (item: object) => boolean): 
 		const target = copy as { [key: string | number]: unknown };
 		for (let i = members.length - 1; i >= 0; i--) {
 			const [key, member] = members[i] as [string | number, unknown];
-			stack.push({ value: member, store: (c) => { Object.defineProperty(target, key, { value: c, enumerable: true, writable: true, configurable: true }); } });
+			stack.push({ value: member, met: true, store: (c) => { Object.defineProperty(target, key, { value: c, enumerable: true, writable: true, configurable: true }); } });
 		}
 	}
 	return refused ? undefined : result;

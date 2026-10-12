@@ -127,7 +127,8 @@ function consume(value: PromiseLike<unknown>): void {
  * Asks the policy and reads its ruling once, each field once (EM13). Anything but a synchronous ruling of the
  * declared form is the application's fault, thrown, so operation-call ends the invocation `failed` with
  * `operation-failed` and nothing is written. A promise met anywhere in reading the ruling - as the ruling, as
- * its `allowed`, as its refusal or within the refusal - has its outcome consumed, every one of them, before the
+ * its `allowed`, as its refusal or within the refusal - has its outcome consumed as it is read, before anything
+ * further is read, so a getter read later that throws cannot strand it; every one is consumed before the
  * ruling is refused, so none escapes to the host's runtime as an unhandled rejection; nothing is awaited. The
  * refusal is read once, whole, into a JSON copy equal to it, and that copy is what is passed on.
  */
@@ -138,7 +139,6 @@ function rule(policy: ApplicationPolicy, question: PolicyQuestion): PolicyRuling
 		throw new TypeError("the application's policy must rule synchronously, so no change lands between its ruling and the write (EM13)");
 	}
 	if (ruling === null || typeof ruling !== "object") throw new TypeError("the application's policy ruled with neither { allowed: true } nor { allowed: false, refusal }");
-	const { allowed, refusal } = ruling as { allowed?: unknown; refusal?: unknown };
 	let promised = false;
 	/** Consumes a promise met in the ruling, which is then refused; its refusal is read all the same. */
 	const meet = (item: unknown): boolean => {
@@ -147,7 +147,11 @@ function rule(policy: ApplicationPolicy, question: PolicyQuestion): PolicyRuling
 		promised = true;
 		return true;
 	};
+	// Each field is met as it is read, before the next is read, so a getter that throws later cannot leave a
+	// promise already read unconsumed.
+	const allowed: unknown = (ruling as { allowed?: unknown }).allowed;
 	meet(allowed);
+	const refusal: unknown = (ruling as { refusal?: unknown }).refusal;
 	const copy = refusal === undefined ? undefined : snapshotJson(refusal, meet);
 	if (promised) throw new TypeError("the application's policy must rule synchronously, with no promise in its ruling (EM13)");
 	if (allowed === true) return { allowed: true };

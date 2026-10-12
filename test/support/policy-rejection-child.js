@@ -2,8 +2,10 @@
 // process with no process-wide rejection handler, so a rejection escaping to the runtime ends the process
 // (zorg's target, EM13; ask-application-policy).
 //
-// For each case - a promise as the ruling's `allowed`, two promises within its refusal, and both at once; each
-// rejecting at once or later; each for a create and for a read - it calls the host, waits long enough for a
+// For each case of the set of forms it is given - "promised": a promise as the ruling's `allowed`, two promises
+// within its refusal, and both at once; "met before a throwing getter": a promise read and then a getter that
+// throws, at the ruling's top level, in a nested refusal object and in a refusal array; each rejecting at once
+// or later; each for a create and for a read - it calls the host, waits long enough for a
 // later rejection to have happened, and then calls again under a policy that allows. It writes what it saw,
 // as JSON, to the file it is given, and exits 0; a rejection that escaped ends it first, with no file written.
 // The parent reads only that file and the exit code: no piped stdio.
@@ -12,7 +14,7 @@ import { openTopology } from "./topology.js";
 import { clientOf, note, openStore, serve } from "./serving.js";
 import { policyRefusal } from "./policies.js";
 
-const [resultFile] = process.argv.slice(2);
+const [resultFile, set = "promised"] = process.argv.slice(2);
 if (!resultFile) throw new Error("policy-rejection-child needs the file to write its result to");
 
 /** A promise rejecting now, or 10 ms from now on the real clock. */
@@ -20,12 +22,33 @@ const rejecting = (timing, what) => (timing === "at once"
 	? Promise.reject(new Error(`${what}, rejecting at once`))
 	: new Promise((_resolve, reject) => setTimeout(() => reject(new Error(`${what}, rejecting later`)), 10)));
 
+/** A getter that throws, read after a promise has been read. */
+const throwing = () => { throw new Error("a getter read after a promise, throwing"); };
+
 /** The policy's ruling for each form, its promises made as it rules. */
-const FORMS = {
+const PROMISED = {
 	"allowed": (timing) => ({ allowed: rejecting(timing, "allowed") }),
 	"within the refusal": (timing) => ({ allowed: false, refusal: policyRefusal("not-writer", { first: rejecting(timing, "first within the refusal"), checks: [1, { pending: rejecting(timing, "within the refusal") }] }) }),
 	"allowed and within the refusal": (timing) => ({ allowed: rejecting(timing, "allowed"), refusal: policyRefusal("not-writer", { pending: rejecting(timing, "within the refusal") }) }),
 };
+
+/**
+ * The policy's ruling for each form in which a promise is read and then a getter throws (EM13): at the ruling's
+ * top level, the `allowed` read before a throwing `refusal`; in a nested refusal object, one member before a
+ * throwing one; and in a refusal array, one member before a throwing one.
+ */
+const MET_BEFORE_A_THROWING_GETTER = {
+	"allowed, then a throwing refusal": (timing) => ({ get allowed() { return rejecting(timing, "allowed"); }, get refusal() { return throwing(); } }),
+	"a nested refusal object's member, then a throwing member": (timing) => ({ allowed: false, refusal: policyRefusal("not-writer", { nested: { get first() { return rejecting(timing, "nested member"); }, get second() { return throwing(); } } }) }),
+	"a refusal array member, then a throwing member": (timing) => {
+		const list = [rejecting(timing, "array member"), 0];
+		Object.defineProperty(list, 1, { get: throwing, enumerable: true });
+		return { allowed: false, refusal: policyRefusal("not-writer", { list }) };
+	},
+};
+
+const FORMS = { "promised": PROMISED, "met before a throwing getter": MET_BEFORE_A_THROWING_GETTER }[set];
+if (!FORMS) throw new Error(`policy-rejection-child has no set of forms ${set}`);
 
 const topology = await openTopology({ callers: ["alice"] });
 const cases = [];

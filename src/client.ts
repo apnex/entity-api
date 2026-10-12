@@ -236,6 +236,18 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 	/** The time left until a call's deadline, read now, so it is read immediately before the call layer is invoked. */
 	const timeLeft = (deadline: number): number => deadline - now();
 
+	/**
+	 * Whether a page's answer, already observed, came once the find's deadline had passed. A reading that throws
+	 * is a fault of the port and cannot show that the deadline passed, so the answer observed decides (EM12).
+	 */
+	const shownLate = (deadline: number): boolean => {
+		try {
+			return now() >= deadline;
+		} catch {
+			return false;
+		}
+	};
+
 	/** The ending of a call whose bound passed with nothing sent: unknown with `bound-passed`, frozen (EM12). */
 	const boundPassed = <A extends string | null>(operation: string, invocation: string, attempt: A) => Object.freeze({
 		ending: "unknown", invocation, attempt, operation, reason: "bound-passed", agpCode: null, deliveryReport: null,
@@ -291,7 +303,9 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 	 * invoked and rounded down to a whole millisecond, as its bound, so no getter of the caller's runs between
 	 * that reading and the invocation; no page is sent with less than 1 millisecond left - the first included,
 	 * when preparing the find used the bound up, the find then ending with attempt null, as no page was sent -
-	 * and no page is taken once the deadline has passed. The first page goes under the identity given, or a new
+	 * and no page is taken once the deadline has passed - shown by a reading taken as its answer is accepted; a
+	 * reading that throws then cannot show it, so the answer observed decides, while one that throws before a
+	 * page is sent is thrown. The first page goes under the identity given, or a new
 	 * one, each later page under a new identity, as of the first page's position and after the last page's
 	 * `next`. A page whose answer is not a page ends the find answered with that answer unchanged. Every ending
 	 * is the caller's, unchanged but for the first page's invocation and attempt.
@@ -317,7 +331,7 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 			if (ending.ending !== "answered") return Object.freeze({ ...ending, invocation: address.invocation, attempt: address.attempt });
 			const form = pageOf(ending.answer);
 			// An answer taken once the deadline has passed loses to it, as EM12 has a call's bound win.
-			if (now() >= deadline) return passed();
+			if (shownLate(deadline)) return passed();
 			if (form === undefined) return Object.freeze({ ...ending, invocation: address.invocation, attempt: address.attempt });
 			position ??= form.position;
 			for (const entry of form.entries) entries.push(entry);

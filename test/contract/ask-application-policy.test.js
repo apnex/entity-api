@@ -12,7 +12,8 @@
 // each read once, and a refusal that is a promise, rejecting at once or later, ending the invocation unknown
 // with its outcome consumed, nothing written, and the host serving on; a promise as the ruling's allowed, or
 // within its refusal, rejecting at once or later, for a create and a read, the same, in a child process with
-// no process-wide rejection handler; the input, the evidence and the target
+// no process-wide rejection handler; and the same for a promise met before a getter that throws, at the
+// ruling's top level, in a nested refusal object and in a refusal array member; the input, the evidence and the target
 // given as deeply frozen JSON snapshots, which the policy cannot change; describe, operation-call's own,
 // ruled on by no policy and naming no writer; and a policy's denial winning over a reused identity.
 import assert from "node:assert/strict";
@@ -257,12 +258,17 @@ test("a refusal that is a promise, rejecting at once or later, ends the invocati
 	assert.equal(process.listenerCount("unhandledRejection"), handlers, "no process-wide rejection handler was left installed");
 });
 
-test("a promise as the ruling's allowed, or within its refusal, rejecting at once or later, for a create and a read, ends the invocation unknown with operation-failed, its outcome consumed, nothing written, and the host serving on, in a process with no rejection handler", async (t) => {
+/**
+ * Runs the host of policy-rejection-child.js over a set of its policy forms, in a process with no process-wide
+ * rejection handler, and asserts every case of it: operation-failed, nothing written, the host serving the
+ * next request; a rejection escaping ends the child before it writes its result. No piped stdio.
+ */
+async function rejectionChild(t, set, forms) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "entity-api-policy-rejection-"));
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 	const resultFile = path.join(dir, "result.json");
 	const errors = fs.openSync(path.join(dir, "stderr.txt"), "w");
-	const child = spawn(process.execPath, ["--unhandled-rejections=throw", fileURLToPath(new URL("../support/policy-rejection-child.js", import.meta.url)), resultFile],
+	const child = spawn(process.execPath, ["--unhandled-rejections=throw", fileURLToPath(new URL("../support/policy-rejection-child.js", import.meta.url)), resultFile, set],
 		{ stdio: ["ignore", errors, errors], env: { ...process.env, NODE_OPTIONS: undefined, NODE_TEST_CONTEXT: undefined } });
 	const [code, signal] = await within(once(child, "exit"), "the child's exit");
 	fs.closeSync(errors);
@@ -270,7 +276,7 @@ test("a promise as the ruling's allowed, or within its refusal, rejecting at onc
 	assert.deepEqual([code, signal], [0, null], `the child ran to its end, no rejection escaping: ${stderr}`);
 	const { cases, handlers } = JSON.parse(fs.readFileSync(resultFile, "utf8"));
 	assert.equal(handlers, 0, "the child installed no process-wide rejection handler");
-	assert.equal(cases.length, 12, "three forms, two timings, a create and a read");
+	assert.equal(cases.length, forms.length * 4, `${forms.length} forms, two timings, a create and a read`);
 	for (const [i, c] of cases.entries()) {
 		const what = `${c.form}, rejecting ${c.timing}, ${c.operation}`;
 		assert.deepEqual(c.ending, ["unknown", "operation-failed", null], what);
@@ -278,7 +284,15 @@ test("a promise as the ruling's allowed, or within its refusal, rejecting at onc
 		assert.deepEqual([c.next, c.nextPosition], ["answered", c.positionBefore + 1], `${what}: the host serves the next request`);
 		assert.equal(c.positionBefore, i, `${what}: only the requests served took a position`);
 	}
-	assert.deepEqual([...new Set(cases.map((c) => c.form))], ["allowed", "within the refusal", "allowed and within the refusal"]);
+	assert.deepEqual([...new Set(cases.map((c) => c.form))], forms);
+}
+
+test("a promise as the ruling's allowed, or within its refusal, rejecting at once or later, for a create and a read, ends the invocation unknown with operation-failed, its outcome consumed, nothing written, and the host serving on, in a process with no rejection handler", async (t) => {
+	await rejectionChild(t, "promised", ["allowed", "within the refusal", "allowed and within the refusal"]);
+});
+
+test("a promise met before a getter that throws - the ruling's allowed before its refusal, a nested refusal object's member or a refusal array member before the next - rejecting at once or later, for a create and a read, ends the invocation unknown with operation-failed, its outcome consumed, nothing written, and the host serving on, in a process with no rejection handler", async (t) => {
+	await rejectionChild(t, "met before a throwing getter", ["allowed, then a throwing refusal", "a nested refusal object's member, then a throwing member", "a refusal array member, then a throwing member"]);
 });
 
 test("the policy's ruling is read once, each field once, and its refusal passed on unchanged", async (t) => {
