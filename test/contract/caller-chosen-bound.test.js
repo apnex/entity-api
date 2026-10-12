@@ -5,7 +5,9 @@
 // ends unknown exactly at the bound its caller gave - the call's own or the client's - and not a millisecond
 // before; the whole find's bound is one deadline for all its pages, from the moment it is called, however its
 // pages spend it; and a bound outside 1 to 2147483647 milliseconds, or not whole, is a programming error,
-// thrown with nothing sent. With operation-call's default clock, a whole find's clock is read as it is called,
+// thrown with nothing sent, as is an abort signal given that is not one - null, one without aborted, one whose
+// aborted is not a boolean - for findPage, a write, a read and the whole find, with time left and after a slow
+// signal getter has spent the whole bound, a genuine signal and none given as controls. With operation-call's default clock, a whole find's clock is read as it is called,
 // before its input and options are read, and no page is answered after its deadline: time passing in their
 // getters spent from the bound, a slow signal, bound or input getter using the bound up before the first page,
 // as findPage ends for the same input, time passing in the first and a later page's preparation, and a final
@@ -125,6 +127,45 @@ test("a bound outside 1 to 2147483647 milliseconds, or not whole, is a programmi
 		await assert.rejects(client.find({ kind: "any" }, { bound }), RangeError, `find, ${bound}`);
 	}
 	assert.equal(store.historyBound().answer.position, 0);
+});
+
+test("an abort signal given that is not one - null, one without aborted, one whose aborted is not a boolean - is a programming error of findPage, a write, a read and the whole find, thrown with time left and after a slow signal getter has spent the whole bound, with nothing handed to the call layer; a genuine signal and none given are not", async (t) => {
+	const { topology, entry, store, setHold } = await withheld(t);
+	setHold(false);
+	const client = clientOf(topology, "alice", { bound: 300 });
+	let written = 0;
+	const calls = {
+		findPage: (o) => client.findPage({ kind: "any" }, o),
+		write: (o) => client.create({ kind: "any", name: `n${++written}`, tags: [], body: 0 }, o),
+		read: (o) => client.read({ target: { id: "e1.1" } }, o),
+		find: (o) => client.find({ kind: "any" }, o),
+	};
+	const malformed = { "a null signal": () => null, "a signal without aborted": () => ({}), "a signal whose aborted is not a boolean": () => ({ aborted: "no" }) };
+	const signalOf = (value, spend) => ({ get signal() { if (spend) topology.hooks.moveCallClock(spend); return value; } });
+	for (const [name, call] of Object.entries(calls)) {
+		for (const spend of [0, 300]) {
+			const when = spend === 0 ? "with time left" : "its getter spending the whole bound";
+			for (const [what, make] of Object.entries(malformed)) {
+				const before = entry.calls.length;
+				await assert.rejects(within(call(signalOf(make(), spend))), TypeError, `${name}, ${what}, ${when}`);
+				assert.equal(entry.calls.length, before, `${name}, ${what}, ${when}: nothing handed to the call layer`);
+			}
+			for (const [what, value] of [["a genuine signal", new AbortController().signal], ["none given", undefined]]) {
+				const before = entry.calls.length;
+				const ending = await within(call(signalOf(value, spend)));
+				if (spend === 0) {
+					assert.equal(entry.calls.length, before + 1, `${name}, ${what}, ${when}: handed to the call layer`);
+					assert.equal(entry.calls.at(-1).signal, value, `${name}, ${what}, ${when}: the signal handed on as given`);
+					if (name === "find") assert.equal(ending.ending, "answered", `${name}, ${what}, ${when}`);
+					else assert.equal(ending, await entry.endings.at(-1), `${name}, ${what}, ${when}: the call layer's ending, unchanged`);
+				} else {
+					assert.deepEqual([ending.ending, ending.reason], ["unknown", "bound-passed"], `${name}, ${what}, ${when}`);
+					assert.equal(entry.calls.length, before, `${name}, ${what}, ${when}: nothing handed to the call layer`);
+				}
+			}
+		}
+	}
+	assert.equal(store.historyBound().answer.position, 2, "only the two writes given time and a genuine signal or none were applied");
 });
 
 /** Spends real time synchronously, as a slow getter or port of the caller's would. */

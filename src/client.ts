@@ -215,6 +215,8 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 		const bound = checkBound(given.bound ?? options.bound);
 		if (given.invocation !== undefined && !isInvocationId(given.invocation)) throw new TypeError("a call's invocation must be an invocation identity as EM11 writes it");
 		if (given.repeat !== undefined && typeof given.repeat !== "boolean") throw new TypeError("a call's repeat flag is true or false");
+		const signal: unknown = given.signal;
+		if (signal !== undefined && (signal === null || typeof (signal as { aborted?: unknown }).aborted !== "boolean")) throw new TypeError("a call's signal must be an AbortSignal");
 		let snapshot: unknown;
 		try {
 			snapshot = snapshotJson(input);

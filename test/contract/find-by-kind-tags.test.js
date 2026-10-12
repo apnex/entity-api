@@ -20,6 +20,10 @@
 // layer, under the identity given or a new one and a new attempt identity of it; spending part of the bound, it
 // leaves the call layer exactly the time left, rounded down; a programming error found once the bound has
 // passed is still thrown; and the find and findPage end alike for the same preparation, but for their attempts.
+// An abort signal given that is not one (EM12, EM10) - null, one without aborted, one whose aborted is not a
+// boolean - is thrown as a TypeError by findPage, a write, a read and the whole find, with time left and once a
+// slow invocation getter has spent the bound, nothing handed to the call layer; a genuine signal and none given
+// as controls.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createStoreClient } from "@apnex/entity-api";
@@ -424,6 +428,38 @@ test("a programming error a single call or a whole find finds once its bound has
 	}
 	await assert.rejects(client.create(SINGLES.create.input(++n), { repeat: "yes", get signal() { late(); return undefined; } }), TypeError, "a write's repeat flag that is not a boolean");
 	assert.equal(entry.calls.length, 0, "nothing was sent");
+});
+
+test("an abort signal given that is not one - null, one without aborted, one whose aborted is not a boolean - is a programming error findPage, a write, a read and the whole find each throw, with time left and once a slow invocation getter has spent the whole bound, nothing handed to the call layer; a genuine signal and none given are not", async (t) => {
+	const { topology, entry } = await setup(t, { count: 3 });
+	const client = clientOf(topology, "alice", { bound: 10 });
+	const calls = { ...SINGLES, find: { operation: "find", call: (c, input, o) => c.find(input, o), input: () => ({ kind: "any" }) } };
+	const malformed = [["a null signal", null], ["a signal without aborted", {}], ["a signal whose aborted is not a boolean", { aborted: 0 }]];
+	const controls = [["a genuine signal", new AbortController().signal], ["none given", undefined]];
+	const prepared = (spend, signal) => ({ get invocation() { if (spend) topology.hooks.moveCallClock(spend); return undefined; }, signal });
+	let n = 0;
+	for (const [name, single] of Object.entries(calls)) {
+		for (const spend of [0, 10, 20]) {
+			const when = spend === 0 ? "with time left" : `a getter spending ${spend} of 10 ms`;
+			for (const [what, signal] of malformed) {
+				const before = entry.calls.length;
+				await assert.rejects(within(single.call(client, single.input(++n), prepared(spend, signal))), TypeError, `${name}, ${what}, ${when}`);
+				assert.equal(entry.calls.length, before, `${name}, ${what}, ${when}: nothing handed to the call layer`);
+			}
+			for (const [what, signal] of controls) {
+				const before = entry.calls.length;
+				const ending = await within(single.call(client, single.input(++n), prepared(spend, signal)));
+				if (spend === 0) {
+					assert.ok(entry.calls.length > before, `${name}, ${what}, ${when}: handed to the call layer`);
+					assert.equal(entry.calls.at(-1).signal, signal, `${name}, ${what}, ${when}: the signal handed on as given`);
+					assert.equal(ending.ending, "answered", `${name}, ${what}, ${when}`);
+				} else {
+					assert.deepEqual([ending.ending, ending.reason], ["unknown", "bound-passed"], `${name}, ${what}, ${when}`);
+					assert.equal(entry.calls.length, before, `${name}, ${what}, ${when}: nothing handed to the call layer`);
+				}
+			}
+		}
+	}
 });
 
 test("a whole find and findPage end bound-passed alike for the same slow signal, bound, invocation or input getter, the find with attempt null, findPage with a new attempt identity, under the identity given or a new one", async (t) => {
