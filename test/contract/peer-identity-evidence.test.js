@@ -14,7 +14,10 @@
 // rejecting promise, and a non-native thenable, are never run, and with a native promise rejecting or resolving
 // to evidence holding a rejecting promise, end the invocation unknown with operation-failed at position 0; an
 // evidence function throwing a rejected promise, or a value holding one, has it consumed (F2) - each in the
-// test's process and in a child process with no rejection handler, the host serving on.
+// test's process and in a child process with no rejection handler, the host serving on. Evidence whose one-time
+// getPrototypeOf trap throws an Error or a rejected promise, and a fulfilled native promise whose own constructor
+// getter throws a rejected promise, end the invocation the same way, the writer naming and the policy never asked
+// (stage 5's sixth verification, F1 and F2).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { within } from "../support/topology.js";
@@ -145,6 +148,14 @@ test("the same evidence answers, in a process with no rejection handler, end the
 test("an evidence function that throws a rejected promise, a plain object holding one or an Error caused by one, rejecting at once or later, ends the invocation unknown with operation-failed, its rejection consumed, nothing written, and the host serving on, in the test's process and in one with no rejection handler (F2)", async (t) => {
 	await faultsInProcess(t, "evidence");
 	await faultsInChild(t, "evidence");
+});
+
+test("evidence whose first getPrototypeOf throws an Error (prototype-error-throw) or a rejected promise (prototype-promise-throw), and a fulfilled native promise whose own constructor getter throws a rejected promise (native-constructor-throw), for a create and a read, end the invocation unknown with operation-failed at position 0, the writer naming and the policy never asked, nothing written, no rejection unhandled, and the host serving on, in the test's process (stage 5's sixth verification, F1 and F2)", async (t) => {
+	await faultsInProcess(t, "evidence boundary");
+});
+
+test("the same evidence boundary faults, in a process run with --unhandled-rejections=throw and no rejection handler, end the invocation unknown with operation-failed at position 0, the writer naming and the policy never asked, and the host serving on (F1 and F2)", async (t) => {
+	await faultsInChild(t, "evidence boundary");
 });
 
 test("a then getter on evidence answered synchronously is never run, and a non-native thenable is never assimilated, for a create and a read: no writer is named, no policy asked, and nothing written", async (t) => {

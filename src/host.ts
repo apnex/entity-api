@@ -182,7 +182,8 @@ function nameFrom(nameWriter: WriterNaming, caller: CallerEvidence): string | nu
  * read as plain data; any other answer is read as plain data at once, through shape-check's `readPlainJson`,
  * so no `then` is probed, no getter runs and no non-native thenable is assimilated. What the host then awaits
  * is a deeply frozen plain JSON value, which has no function `then`. Whatever the port throws, or its promise
- * rejects with, has every native promise in it given a handler that does nothing before it is thrown on, so
+ * rejects with - and whatever asking whether its answer is a native promise, or attaching to that promise,
+ * throws - has every native promise in it given a handler that does nothing before it is thrown on, so
  * operation-call ends the invocation `failed` with `operation-failed` and no rejection goes unhandled.
  */
 function plainEvidence(evidence: EvidenceFunction): EvidenceFunction {
@@ -194,20 +195,23 @@ function plainEvidence(evidence: EvidenceFunction): EvidenceFunction {
 			observePromises(err);
 			throw err;
 		}
-		let native = false;
+		// Asking whether the answer is a native promise can run a Proxy's trap, and attaching to one can run its
+		// `constructor` or `Symbol.species` getter: a throw from either ends the read, what it threw and the answer
+		// observed, never retried as though nothing threw.
 		try {
-			native = raw instanceof Promise;
-		} catch {
-			native = false;
-		}
-		if (native) {
-			return Reflect.apply(Promise.prototype.then, raw, [
-				(resolved: unknown) => plain(resolved, "the caller's evidence"),
-				(err: unknown) => {
-					observePromises(err);
-					throw err;
-				},
-			]);
+			if (raw instanceof Promise) {
+				return Reflect.apply(Promise.prototype.then, raw, [
+					(resolved: unknown) => plain(resolved, "the caller's evidence"),
+					(err: unknown) => {
+						observePromises(err);
+						throw err;
+					},
+				]);
+			}
+		} catch (err) {
+			observePromises(err);
+			observePromises(raw);
+			throw err;
 		}
 		return plain(raw, "the caller's evidence");
 	};

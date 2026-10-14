@@ -12,6 +12,12 @@
 // promise. None of it is awaited as it is: entity-api reads a synchronous answer as plain data before the
 // host awaits it, so no then getter or thenable runs, and follows only a native promise.
 //
+// "evidence boundary" (stage 5's sixth verification, F1 and F2): the evidence function answers a Proxy over
+// plain evidence whose first getPrototypeOf throws an Error, or a rejected promise, and gives the ordinary
+// prototype thereafter, so asking whether it is a native promise throws once; or a fulfilled native promise
+// whose own constructor getter throws a rejected promise, so attaching to it throws. Each throw ends the read:
+// the writer naming and the policy are never asked, and the rejection thrown is consumed.
+//
 // Each form, each timing and each operation ends the invocation unknown with operation-failed, writes
 // nothing, runs no code of the answer, and is followed by a request the host serves.
 
@@ -42,11 +48,28 @@ export function formsOf(set, ran) {
 			"a native promise resolving to evidence holding a rejecting promise": (timing) => ({ evidence: () => Promise.resolve({ node: "alice", pending: rejecting(timing, "a promise within the evidence") }) }),
 		};
 	}
+	if (set === "evidence boundary") {
+		// The writer naming and the policy record being asked, so a case shows neither was.
+		const unasked = { nameWriter: (caller) => { ran.push("writer named"); return caller.evidence.principal; }, policy: () => { ran.push("policy asked"); return { allowed: true }; } };
+		/** A Proxy over plain evidence whose first getPrototypeOf throws what `thrown` makes, and gives the ordinary prototype after. */
+		const prototypeOnce = (thrown) => {
+			let runs = 0;
+			return new Proxy({ node: "alice", principal: "alice" }, { getPrototypeOf(target) { if (runs++ === 0) throw thrown(); return Reflect.getPrototypeOf(target); } });
+		};
+		return {
+			"prototype-error-throw": () => ({ ...unasked, evidence: () => prototypeOnce(() => new Error("a one-time prototype failure")) }),
+			"prototype-promise-throw": (timing) => ({ ...unasked, evidence: () => prototypeOnce(() => rejecting(timing, "a one-time prototype trap's thrown promise")) }),
+			"native-constructor-throw": (timing) => ({ ...unasked, evidence: () => {
+				const fulfilled = Promise.resolve({ node: "alice", principal: "alice" });
+				return Object.defineProperty(fulfilled, "constructor", { get() { throw rejecting(timing, "a fulfilled evidence promise's constructor getter's thrown promise"); } });
+			} }),
+		};
+	}
 	throw new Error(`callback-faults has no set of forms ${set}`);
 }
 
 /** The operations each set's faults are met by: the writer naming is asked for writes only. */
-export const OPERATIONS = { policy: ["create", "read"], nameWriter: ["create", "delete"], evidence: ["create", "read"], "evidence returned": ["create", "read"] };
+export const OPERATIONS = { policy: ["create", "read"], nameWriter: ["create", "delete"], evidence: ["create", "read"], "evidence returned": ["create", "read"], "evidence boundary": ["create", "read"] };
 
 /**
  * Callbacks for serveStore that do as `mode` says, when it says, and otherwise as the tests' ordinary ones do:
