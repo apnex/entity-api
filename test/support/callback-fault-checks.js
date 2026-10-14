@@ -24,7 +24,7 @@ function checkCases(set, cases) {
 		const what = `${set}: ${c.form}, rejecting ${c.timing}, ${c.operation}`;
 		assert.deepEqual(c.ending, ["unknown", "operation-failed", null], what);
 		assert.equal(c.written, false, `${what}: nothing written`);
-		assert.equal(c.codeRun, 0, `${what}: no getter or thenable of the answer run`);
+		assert.equal(c.codeRun, 0, `${what}: no getter or thenable of the answer run, and no writer named or policy asked where the case says so`);
 		assert.equal(c.positionBefore, i, `${what}: only the requests served took a position`);
 		assert.deepEqual([c.next, c.nextPosition], ["answered", c.positionBefore + 1], `${what}: the host serves the next request`);
 	}
