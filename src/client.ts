@@ -4,24 +4,21 @@
  * operation-call's own caller, or operation-proxy's client half, which offers the same interface - pinned to
  * the host the application names.
  *
- * Every call, the whole find and each single call alike, reads its clock as it is called, before anything
- * else, as every caller reads its own (EM12), and then reads its input and options once, into a snapshot, so
- * a caller's programming error - a bound out of range or not whole, an input that is not a JSON value, an
- * invocation identity not as EM11 writes it, a repeat flag that is not a boolean - is thrown whatever the
- * time, and nothing is sent. Its deadline is that reading plus the bound, so the time the snapshot takes is
- * spent from the bound. A single call then gives the call layer the snapshot, with the time left until its
- * deadline, rounded down to a whole millisecond, as the call's bound, and ends as the call layer ends it -
- * answered with the store's answer, refused with the refusal record unchanged, not delivered, or unknown -
- * the ending returned unchanged. When less than 1 millisecond is left it sends nothing, and ends as the call
- * layer's caller ends a call whose bound passed while it prepared: unknown with `bound-passed`, under the
- * invocation identity given or a new one, with a new attempt identity of that invocation as EM11 writes it,
- * no AGP code and no delivery report, frozen - so a single call's ending is always one the caller interface
- * writes. A write's identity is its invocation identity: the client never writes a writer or a write
- * identity into an input, and an application repeats a write by repeating its invocation (EM7,
+ * Each single call - `create`, `read`, `update`, `delete`, `findPage` and `historyBound` - delegates directly to
+ * the call layer's caller (EM10, EM12; zorg's D55): it reads nothing and keeps no clock of its own, but hands
+ * the caller one request whose option getters read the application's options, each at most once, only when
+ * the caller reads them - which operation-call's caller does after reading its clock - the bound defaulting to
+ * the client's, the repeat flag forwarded for a write only, and the invocation and the signal when given. So
+ * the call layer owns the clock reading, the reads of the options and the input, the programming errors, the
+ * `bound-passed` ending with its made attempt identity, and the invocation, and the ending is the call
+ * layer's, unchanged. A write's identity is its invocation identity: the client never writes a writer or a
+ * write identity into an input, and an application repeats a write by repeating its invocation (EM7,
  * `repeat-recognition`).
  *
- * `find` is the whole find of EM10: every match, `{position, entries}`, read page by page as of the first
- * page's position within one deadline; `findPage` is one page, exactly as the store answers it. Nothing here
+ * `find` is the whole find of EM10, the client's own aggregate operation: it reads its clock as it is called,
+ * then its input and options once, the input through shape-check's `snapshotJson`, and answers every match,
+ * `{position, entries}`, read page by page as of the first page's position within one deadline; `findPage` is
+ * one page, exactly as the store answers it. Nothing here
  * is particular to one runtime (zorg's D31): time and randomness come from the ports it is given, by default
  * operation-call's.
  */
@@ -31,20 +28,21 @@ import {
 	MAX_BOUND_MS,
 	type CallClock,
 	type CallEnding,
+	type CallRequest,
 	type IdentitySource,
 	type JsonInput,
 	type JsonValue,
 	type OperationCaller,
 } from "@apnex/operation-call";
-import { isAttemptId, isInvocationId, NAME_PATTERN } from "@apnex/operation-call/message-format";
-import { snapshotJson } from "./json.js";
+import { isInvocationId, NAME_PATTERN } from "@apnex/operation-call/message-format";
+import { snapshotJson } from "@apnex/shape-check";
 import type { StoreOperation } from "./store-operations.js";
 
 /** What a client is built from. */
 export interface StoreClientOptions {
 	/**
 	 * The caller every call the client sends is invoked through: operation-call's caller, or anything offering
-	 * its interface. A call whose bound passed while the client read its input and options is never handed to it.
+	 * its interface. A whole find whose bound passed while it read its input and options hands it no page.
 	 */
 	readonly caller: OperationCaller;
 	/** The AGP node of the host the application means; every call is pinned to it (`advertiser-instance-select`). */
@@ -54,16 +52,15 @@ export interface StoreClientOptions {
 	/** The bound of any call that names none, in whole milliseconds from 1 to 2147483647; none when absent. */
 	readonly bound?: number;
 	/**
-	 * The clock every call's deadline is kept on - a whole find's and each single call's, read as the call is
-	 * called and again before the call layer is invoked - so give the caller's own. operation-call's default
-	 * when absent.
+	 * The clock a whole find's one deadline is kept on, read as the find is called, before each page is invoked
+	 * and as each page's answer is accepted - so give the caller's own; a single call keeps no clock, the call
+	 * layer's caller keeping its own. operation-call's default when absent.
 	 */
 	readonly clock?: CallClock;
 	/**
-	 * Where the client takes the identities of an ending it gives itself, having sent nothing: when a whole
-	 * find's bound passed before any page was sent, its invocation identity, if none was given; when a single
-	 * call's bound passed before it could be sent, its invocation identity, if none was given, and a new
-	 * attempt identity of that invocation. operation-call's default when absent.
+	 * Where the client takes the invocation identity of the one ending it gives itself, having sent nothing: a
+	 * whole find's whose bound passed before any page was sent, when none was given. operation-call's default
+	 * when absent.
 	 */
 	readonly identities?: IdentitySource;
 }
@@ -71,11 +68,11 @@ export interface StoreClientOptions {
 /** What each call may name. */
 export interface CallOptions {
 	/**
-	 * The call's bound, in whole milliseconds from 1 to 2147483647, starting when the operation is called: the
-	 * time the client takes reading the call's input and options is spent from it. A single call gives the call
-	 * layer the time left, rounded down to a whole millisecond, as its bound, and a whole find gives each page
-	 * the time left when that page is invoked; with less than 1 millisecond left nothing is sent, and the call
-	 * ends unknown with `bound-passed`. A bound out of range or not whole is thrown, whatever the time.
+	 * The call's bound, in whole milliseconds from 1 to 2147483647. A single call hands it to the call layer,
+	 * whose caller starts it as it reads its clock, before it reads this option. A whole find's starts when the
+	 * find is called, the time it takes reading its input and options spent from it, and gives each page the
+	 * time left when that page is invoked; with less than 1 millisecond left no page is sent, and the find ends
+	 * unknown with `bound-passed`. A bound out of range or not whole is thrown, whatever the time.
 	 */
 	readonly bound?: number;
 	/** The invocation identity to use, as EM11 writes it; a new one when absent. */
@@ -126,37 +123,40 @@ function checkBound(bound: unknown): number {
 	return bound;
 }
 
+/** The message of a call's options that are neither an object nor absent. */
+const NOT_OPTIONS = "a call's options are an object: { bound, invocation, signal }";
+
 /**
- * Reads a call's options, which are an object or absent, once, into a snapshot: each field the call takes -
- * the bound, the invocation, the signal, and for a write the repeat flag - is read exactly once, now, and
- * never again, so no getter of the caller's runs once the call is under way (EM10).
+ * Reads a whole find's options, which are an object or absent, once, into a snapshot: the bound, the
+ * invocation and the signal are each read exactly once, now, and never again, so no getter of the caller's
+ * runs once the find is under way (EM10).
  */
-function optionsOf(options: WriteOptions | undefined, repeatable: boolean): Partial<WriteOptions> {
+function optionsOf(options: CallOptions | undefined): Partial<CallOptions> {
 	if (options === undefined) return {};
-	if (options === null || typeof options !== "object") throw new TypeError("a call's options are an object: { bound, invocation, signal }");
+	if (options === null || typeof options !== "object") throw new TypeError(NOT_OPTIONS);
 	const bound = options.bound;
 	const invocation = options.invocation;
 	const signal = options.signal;
-	const repeat = repeatable ? options.repeat : undefined;
 	return {
 		...(bound === undefined ? {} : { bound }),
 		...(invocation === undefined ? {} : { invocation }),
 		...(signal === undefined ? {} : { signal }),
-		...(repeat === undefined ? {} : { repeat }),
 	};
 }
 
 /**
- * A call as begun (EM10): its deadline on the client's clock, and the snapshot of its input and of the options
- * it takes, read once and checked.
+ * A whole find as begun (EM10): its deadline on the client's clock, and the snapshot of its input and of the
+ * options it takes, read once and checked.
  */
 interface Begun {
 	readonly deadline: number;
 	readonly input: JsonValue;
 	readonly invocation?: string;
 	readonly signal?: AbortSignal;
-	readonly repeat?: boolean;
 }
+
+/** One option as a single call's request read it: its value, or what reading it threw. */
+type OptionRead = { readonly threw: false; readonly value: unknown } | { readonly threw: true; readonly error: unknown };
 
 /** A page's answer as EM10 gives it, its fields read once, or undefined when the answer is not a page. */
 interface PageForm { readonly position: number; readonly entries: readonly JsonValue[]; readonly next: string | null }
@@ -192,7 +192,7 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 	if (!identities || typeof identities.wallTimeMs !== "function" || typeof identities.randomHex !== "function") throw new TypeError("a client's identities offer wallTimeMs and randomHex");
 
 	// The caller's invoke and the clock's now are read once, here, so no getter of theirs runs between a
-	// call's or a page's clock reading and its invocation (EM10).
+	// page's clock reading and its invocation (EM10).
 	const callerInvoke = caller.invoke;
 	const clockNow = clock.now;
 
@@ -204,32 +204,30 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 	};
 
 	/**
-	 * Begins a call, the whole find and every single call alike (EM10, EM12): the clock is read first, before
-	 * anything else, then the options and the input are each read once, into a snapshot, and checked, so a
-	 * programming error is thrown whatever the time. The call's deadline is that first reading plus the bound,
-	 * so the time the snapshot takes is spent from the bound. The repeat flag is read only for a write.
+	 * Begins a whole find (EM10, EM12): the clock is read first, before anything else, then the options and the
+	 * input are each read once, into a snapshot - the input through shape-check's `snapshotJson` - and checked,
+	 * so a programming error is thrown whatever the time. The find's deadline is that first reading plus the
+	 * bound, so the time the snapshot takes is spent from the bound.
 	 */
-	const begin = (input: JsonInput, call: WriteOptions | undefined, repeatable: boolean): Begun => {
+	const begin = (input: JsonInput, call: CallOptions | undefined): Begun => {
 		const start = now();
-		const given = optionsOf(call, repeatable);
+		const given = optionsOf(call);
 		const bound = checkBound(given.bound ?? options.bound);
 		if (given.invocation !== undefined && !isInvocationId(given.invocation)) throw new TypeError("a call's invocation must be an invocation identity as EM11 writes it");
-		if (given.repeat !== undefined && typeof given.repeat !== "boolean") throw new TypeError("a call's repeat flag is true or false");
 		const signal: unknown = given.signal;
 		if (signal !== undefined && (signal === null || typeof (signal as { aborted?: unknown }).aborted !== "boolean")) throw new TypeError("a call's signal must be an AbortSignal");
-		let snapshot: unknown;
+		let snapshot: ReturnType<typeof snapshotJson>;
 		try {
 			snapshot = snapshotJson(input);
 		} catch (error) {
 			throw new TypeError("a call's input could not be read as a JSON value", { cause: error });
 		}
-		if (snapshot === undefined) throw new TypeError("a call's input must be a JSON value");
+		if (!snapshot.ok) throw new TypeError("a call's input must be a JSON value");
 		return {
 			deadline: start + bound,
-			input: snapshot as JsonValue,
+			input: snapshot.value,
 			...(given.invocation === undefined ? {} : { invocation: given.invocation }),
 			...(given.signal === undefined ? {} : { signal: given.signal }),
-			...(given.repeat === undefined ? {} : { repeat: given.repeat }),
 		};
 	};
 
@@ -262,56 +260,60 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 		return identity;
 	};
 
-	/** A new attempt identity of an invocation as EM11 writes it, for a single call that ends with nothing sent. */
-	const newAttempt = (invocation: string): string => {
-		const identity = `${invocation}.${identities.randomHex(8)}`;
-		if (!isAttemptId(identity)) throw new TypeError("the client's identities gave no attempt identity as EM11 writes it");
-		return identity;
-	};
-
 	/**
-	 * A single call (EM10): begun as every call is, then given to the call layer as one invocation with the
-	 * snapshot, and the time left, rounded down to a whole millisecond, as its bound; its ending is the call
-	 * layer's, unchanged. When less than 1 millisecond is left nothing is sent, and the call ends as the call
-	 * layer's caller ends a call whose bound passed while it prepared: under the invocation identity given or
-	 * a new one, with a new attempt identity of that invocation.
+	 * A single call (EM10, EM12; zorg's D55): delegated directly to the call layer's caller as one invocation, its
+	 * ending the caller's, unchanged. The request holds the host, the service, the operation and the input as
+	 * given, and getters of `bound`, `invocation`, `signal` and, for a write only, `repeat`, each reading the
+	 * application's option of that name at most once, when the caller first reads it - operation-call's caller
+	 * reads its clock first - and giving the same value, or the same throw, at every later read. The bound
+	 * defaults to the client's; options that are neither an object nor absent throw a TypeError as an option is
+	 * read. Nothing is read, checked or timed here: the call layer owns all of it.
 	 */
 	const single = async (operation: StoreOperation, input: JsonInput, call: WriteOptions | undefined, repeatable: boolean): Promise<CallEnding> => {
-		const begun = begin(input, call, repeatable);
-		const left = timeLeft(begun.deadline);
-		if (left < 1) {
-			const invocation = begun.invocation ?? newInvocation();
-			return boundPassed(operation, invocation, newAttempt(invocation));
-		}
-		return callerInvoke.call(caller, {
-			host,
-			service,
-			operation,
-			input: begun.input,
-			bound: Math.floor(left),
-			...(begun.invocation === undefined ? {} : { invocation: begun.invocation }),
-			...(begun.repeat === undefined ? {} : { repeat: begun.repeat }),
-			...(begun.signal === undefined ? {} : { signal: begun.signal }),
-		});
+		const reads = new Map<string, OptionRead>();
+		/** The application's option `name`, read at most once. */
+		const option = (name: "bound" | "invocation" | "signal" | "repeat"): unknown => {
+			let read = reads.get(name);
+			if (read === undefined) {
+				try {
+					if (call !== undefined && (call === null || typeof call !== "object")) throw new TypeError(NOT_OPTIONS);
+					read = { threw: false, value: call === undefined ? undefined : call[name] };
+				} catch (error) {
+					read = { threw: true, error };
+				}
+				reads.set(name, read);
+			}
+			if (read.threw) throw read.error;
+			return read.value;
+		};
+		const request = { host, service, operation, input } as { -readonly [K in keyof CallRequest]: CallRequest[K] };
+		const getter = (name: "bound" | "invocation" | "signal" | "repeat", get: () => unknown): void => {
+			Object.defineProperty(request, name, { get, enumerable: true, configurable: false });
+		};
+		getter("bound", () => option("bound") ?? options.bound);
+		getter("invocation", () => option("invocation"));
+		if (repeatable) getter("repeat", () => option("repeat"));
+		getter("signal", () => option("signal"));
+		return callerInvoke.call(caller, Object.freeze(request));
 	};
 
 	/**
-	 * The whole find of EM10, begun as every call is: its clock is read as it is called, before anything else,
-	 * as every caller reads its own (EM12); then its input and options are read once, into a snapshot, and its
-	 * one deadline is that first reading plus the bound, so the time the snapshot takes is spent from the bound,
-	 * as for a single call. Each page is invoked with the time left, read immediately before that page is
+	 * The whole find of EM10: its clock is read as it is called, before anything else, as every caller reads its
+	 * own (EM12); then its input and options are read once, into a snapshot, and its one deadline is that first
+	 * reading plus the bound, so the time the snapshot takes is spent from the bound. Each page is invoked with the time left, read immediately before that page is
 	 * invoked and rounded down to a whole millisecond, as its bound, so no getter of the caller's runs between
 	 * that reading and the invocation; no page is sent with less than 1 millisecond left - the first included,
 	 * when preparing the find used the bound up, the find then ending with attempt null, as no page was sent -
-	 * and no page is taken once the deadline has passed - shown by a reading taken as its answer is accepted; a
-	 * reading that throws then cannot show it, so the answer observed decides, while one that throws before a
-	 * page is sent is thrown. The first page goes under the identity given, or a new
+	 * and no answered page is taken once the deadline has passed - shown by a reading taken as its answer is
+	 * accepted; a reading that throws then cannot show it, so the answer observed decides, while one that throws
+	 * before a page is sent is thrown. A page ending other than answered ends the find as that page ended, whenever
+	 * it is observed (step 5). The first page goes under the identity given, or a new
 	 * one, each later page under a new identity, as of the first page's position and after the last page's
 	 * `next`. A page whose answer is not a page ends the find answered with that answer unchanged. Every ending
 	 * is the caller's, unchanged but for the first page's invocation and attempt.
 	 */
 	const find = async (input: JsonInput, call?: CallOptions): Promise<FindEnding> => {
-		const { deadline, input: query, invocation, signal } = begin(input, call, false);
+		const { deadline, input: query, invocation, signal } = begin(input, call);
 		let first: { readonly invocation: string; readonly attempt: string | null } | undefined;
 		let position: number | undefined;
 		const entries: JsonValue[] = [];

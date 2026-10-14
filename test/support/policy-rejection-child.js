@@ -4,8 +4,11 @@
 //
 // For each case of the set of forms it is given - "promised": a promise as the ruling's `allowed`, two promises
 // within its refusal, and both at once; "met before a throwing getter": a promise read and then a getter that
-// throws, at the ruling's top level, in a nested refusal object and in a refusal array; each rejecting at once
-// or later; each for a create and for a read - it calls the host, waits long enough for a
+// throws, at the ruling's top level, in a nested refusal object and in a refusal array; "fourth verification":
+// the forms of stage 5's fourth verification whose promises went unhandled, and promises in own data properties
+// named then or hidden as non-enumerable, which the plain-data reader observes without running any getter
+// (zorg's D54, D55); each rejecting at once or later; each for a create and for a read - it calls the host,
+// waits long enough for a
 // later rejection to have happened, and then calls again under a policy that allows. It writes what it saw,
 // as JSON, to the file it is given, and exits 0; a rejection that escaped ends it first, with no file written.
 // The parent reads only that file and the exit code: no piped stdio.
@@ -47,7 +50,20 @@ const MET_BEFORE_A_THROWING_GETTER = {
 	},
 };
 
-const FORMS = { "promised": PROMISED, "met before a throwing getter": MET_BEFORE_A_THROWING_GETTER }[set];
+/** A refusal record of EM9's form. */
+const declined = (details = {}) => ({ part: "application", code: "declined", what: "Declined", why: "Application rule", fix: "Ask owner", details });
+
+/** The forms of stage 5's fourth verification whose promises went unhandled, and promises in data the reader observes. */
+const FOURTH_VERIFICATION = {
+	"a ruling's then getter giving a rejecting promise": (timing) => ({ allowed: true, get then() { return rejecting(timing, "a ruling's then"); } }),
+	"a refusal member's non-enumerable then getter giving a rejecting promise": (timing) => ({ allowed: false, refusal: declined({ member: Object.defineProperty({ kept: 1 }, "then", { get: () => rejecting(timing, "a member's then") }) }) }),
+	"a refusal member's throwing getter before a then getter giving a rejecting promise": (timing) => ({ allowed: false, refusal: declined({ member: { get before() { return throwing(); }, get then() { return rejecting(timing, "a member's then"); } } }) }),
+	"a rejecting promise as a ruling's own then data property": (timing) => ({ allowed: true, then: rejecting(timing, "a ruling's then data") }),
+	"a rejecting promise as a ruling's non-enumerable then data property": (timing) => Object.defineProperty({ allowed: true }, "then", { value: rejecting(timing, "a ruling's hidden then data") }),
+	"a rejecting promise hidden in a refusal member's non-enumerable data property": (timing) => ({ allowed: false, refusal: declined({ member: Object.defineProperty({ kept: 1 }, "hidden", { value: [rejecting(timing, "hidden data")] }) }) }),
+};
+
+const FORMS = { "promised": PROMISED, "met before a throwing getter": MET_BEFORE_A_THROWING_GETTER, "fourth verification": FOURTH_VERIFICATION }[set];
 if (!FORMS) throw new Error(`policy-rejection-child has no set of forms ${set}`);
 
 const topology = await openTopology({ callers: ["alice"] });

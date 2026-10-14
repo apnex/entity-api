@@ -14,27 +14,29 @@
 // JSON, cycles, aliases and getters in a whole find's input; the abort signal reaching every page; and a page
 // whose answer is not a page, first or later, ending the find answered with that answer unchanged under the
 // first page's invocation and attempt.
-// The single calls (EM10 as revised), findPage, a write and a read, read their clock as they are called, as
-// the whole find does: a slow signal, bound, invocation or input getter spending all the bound, or leaving less
-// than 1 millisecond, ends the call unknown with bound-passed, whole and frozen, with nothing handed to the call
-// layer, under the identity given or a new one and a new attempt identity of it; spending part of the bound, it
-// leaves the call layer exactly the time left, rounded down; a programming error found once the bound has
-// passed is still thrown; and the find and findPage end alike for the same preparation, but for their attempts.
+// The single calls, findPage, a write and a read, delegate directly to the call layer's caller (EM10, EM12;
+// zorg's D55), which reads its clock and then each option once: a slow signal, bound, invocation or input getter
+// spending all the bound ends the call unknown with bound-passed, as the call layer ends it, whole and frozen,
+// nothing sent, under the identity given or a new one and a new attempt identity of it; leaving any time at all,
+// less than 1 millisecond included, the call layer sends the call, given the bound as the application gave it,
+// and its ending is returned unchanged; a programming error found once the bound has passed is still thrown,
+// nothing sent; and the find and findPage end alike for the same preparation, but for their identities.
+// A page ending other than answered ends the find as that page ended whenever it is observed (step 5), at or
+// after the find's deadline included, while an answered page observed then loses to the deadline.
 // A reading of entity-api's own clock that throws as a page's answer is accepted (EM12, EM10), over the real
 // caller - at a first, a final and a malformed page, each throw counted - ending as the answer observed
 // decides, and one throwing before a later page is sent thrown, as before; with a healthy clock, an answer
 // accepted at the deadline or after it losing, and one just before it taken.
 // An abort signal given that is not one (EM12, EM10) - null, one without aborted, one whose aborted is not a
 // boolean - is thrown as a TypeError by findPage, a write, a read and the whole find, with time left and once a
-// slow invocation getter has spent the bound, nothing handed to the call layer; a genuine signal and none given
-// as controls.
+// slow invocation getter has spent the bound, nothing sent; a genuine signal and none given as controls.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createStoreClient } from "@apnex/entity-api";
 import { createOperationHost } from "@apnex/operation-call";
 import { openTopology, preparingIdentities, until, within } from "../support/topology.js";
 import { createManualCallClock } from "../support/manual-call-clock.js";
-import { answerOf, clientOf, nodeEvidence, note, openStore, serve, T0 } from "../support/serving.js";
+import { answerOf, clientOf, nodeEvidence, note, openStore, requested, serve, T0 } from "../support/serving.js";
 
 const PAD = 200_000;
 const ID = "1791540000000-0123456789abcdef";
@@ -43,7 +45,7 @@ const ID = "1791540000000-0123456789abcdef";
  * A store of `count` entities of kind `any`, about 200 KB each, so a page holds two, served on host-a; hooks
  * run before and after the store answers each page, the nth page's hook by its number.
  */
-async function setup(t, { count = 5, historyMs = 60_000, policy, evidence = nodeEvidence, bound = 1000, identities } = {}) {
+async function setup(t, { count = 5, historyMs = 60_000, policy, evidence: given = nodeEvidence, bound = 1000, identities } = {}) {
 	const topology = await openTopology({ callers: ["alice"], ...(identities ? { identities } : {}) });
 	t.after(() => topology.close());
 	const opened = openStore({ maxEntityBytes: 262_144, historyMs });
@@ -51,6 +53,9 @@ async function setup(t, { count = 5, historyMs = 60_000, policy, evidence = node
 	const before = {};
 	const after = {};
 	let pages = 0;
+	// Every request that reaches the host, of any operation, counted as the evidence port is asked.
+	let arrived = 0;
+	const evidence = (delivery) => { arrived++; return given(delivery); };
 	const store = {
 		...Object.fromEntries(["create", "update", "delete", "read", "historyBound", "checkRepeat"].map((m) => [m, (...a) => opened.store[m](...a)])),
 		find(input) {
@@ -63,7 +68,7 @@ async function setup(t, { count = 5, historyMs = 60_000, policy, evidence = node
 	};
 	await serve(topology, { store, evidence, ...(policy ? { policy } : {}) });
 	const entry = topology.caller("alice");
-	return { topology, entry, before, after, ...opened, client: clientOf(topology, "alice", { bound }), pagesServed: () => pages };
+	return { topology, entry, before, after, ...opened, client: clientOf(topology, "alice", { bound }), pagesServed: () => pages, arrived: () => arrived };
 }
 
 const names = (entries) => entries.map((e) => e.name);
@@ -311,9 +316,10 @@ test("a slow signal getter, a slow bound getter or a slow input getter that uses
 	assert.equal(entry.calls.length, 0, "no page was sent");
 	const page = await within(client.findPage(...preparations.input(20)));
 	assert.deepEqual([page.ending, page.reason], ["unknown", "bound-passed"], "findPage ends at its bound for the same input");
-	assert.equal(entry.calls.length, 0, "nothing handed to the call layer for findPage either");
+	assert.equal(page, await entry.endings[0], "as the call layer, reading its input after its clock, ends it");
+	assert.equal(pagesServed(), 0, "nothing sent for findPage either");
 	answerOf(await within(client.find(...preparations.input(9))));
-	assert.deepEqual(entry.calls.map((p) => p.bound), [1, 1], "with exactly 1 ms left, each page is sent, bounded by what is left");
+	assert.deepEqual(entry.calls.slice(1).map((p) => p.bound), [1, 1], "with exactly 1 ms left, each page is sent, bounded by what is left");
 	assert.equal(pagesServed(), 2);
 });
 
@@ -358,34 +364,49 @@ const slowGetters = (move, reads = { n: 0 }) => {
 /** The ending a call whose bound passed with nothing sent is given, whole, as the call layer's caller gives it. */
 const passed = (operation, invocation, attempt) => ({ ending: "unknown", invocation, attempt, operation, reason: "bound-passed", agpCode: null, deliveryReport: null });
 
-test("findPage, a write and a read each read their clock as they are called: a slow signal, bound, invocation or input getter spending the bound, or leaving less than 1 ms, ends the call unknown at its bound, nothing handed to the call layer, under the identity given or a new one, with a new attempt identity of it", async (t) => {
-	const { topology, entry, store, pagesServed } = await setup(t, { count: 3 });
+test("findPage, a write and a read each delegate to the call layer, which reads its clock before their options and input: a slow signal, bound, invocation or input getter spending the bound ends the call unknown at its bound as the call layer ends it, nothing sent, under the identity given or a new one, with a new attempt identity of it; leaving less than 1 ms, the call layer sends it", async (t) => {
 	const ids = countingIdentities();
-	const client = clientOf(topology, "alice", { bound: 10, identities: ids.source });
+	const { topology, entry, store, pagesServed, arrived } = await setup(t, { count: 3, identities: ids.source });
+	const client = clientOf(topology, "alice", { bound: 10 });
 	const preparations = slowGetters((ms) => topology.hooks.moveCallClock(ms));
 	let n = 0;
+	let sent = 0;
+	let written = 0;
 	for (const [name, single] of Object.entries(SINGLES)) {
 		for (const [what, prepare] of Object.entries(preparations)) {
 			for (const ms of [20, 10, 9.5]) {
 				for (const given of [ID, undefined]) {
 					const label = `${name}, a slow ${what} getter spending ${ms} of 10 ms, ${given === undefined ? "no identity given" : "the identity given"}`;
+					const calls = entry.calls.length;
 					const invocation = given ?? `1791540000123-${ids.ahead(1, 16)}`;
 					const attempt = `${invocation}.${ids.ahead(given === undefined ? 2 : 1, 8)}`;
 					const ending = await within(single.call(client, ...prepare(single.input(++n), ms, given)));
+					assert.equal(entry.calls.length, calls + 1, `${label}: one invocation of the call layer`);
+					assert.equal(ending, await entry.endings.at(-1), `${label}: the call layer's ending, unchanged`);
+					if (ms === 9.5) {
+						sent++;
+						// A create repeating the identity given with another input meets the store's identity-reused.
+						const reused = single.operation === "create" && given !== undefined && ending.refusal?.code === "identity-reused";
+						assert.ok(ending.ending === "answered" || reused, `${label}: 0.5 ms left when the call layer had read the call, so it was sent: ${JSON.stringify(ending)}`);
+						if (single.operation === "create" && ending.ending === "answered") written++;
+						assert.equal(arrived(), sent, `${label}: sent`);
+						continue;
+					}
 					assert.deepEqual(ending, passed(single.operation, invocation, attempt), label);
 					assert.deepEqual(Object.keys(ending), ["ending", "invocation", "attempt", "operation", "reason", "agpCode", "deliveryReport"], label);
 					assert.match(ending.attempt, ATTEMPT, `${label}: an attempt identity as EM11 writes it`);
 					assert.ok(Object.isFrozen(ending), label);
-					assert.equal(entry.calls.length, 0, `${label}: nothing handed to the call layer`);
+					assert.equal(arrived(), sent, `${label}: nothing sent`);
 				}
 			}
 		}
 	}
-	assert.equal(pagesServed(), 0, "no page reached the store");
-	assert.equal(store.historyBound().answer.position, 3, "nothing was written");
+	assert.equal(pagesServed(), 8, "only the pages left time reached the store");
+	assert.equal(written, 5, "four creates under new identities, and one under the identity given");
+	assert.equal(store.historyBound().answer.position, 3 + written, "only the writes left time were written");
 });
 
-test("findPage, a write and a read each spend from their bound the time a slow signal, bound, invocation or input getter takes: the call layer is given exactly the time left, rounded down, and its ending is returned unchanged", async (t) => {
+test("findPage, a write and a read each leave to the call layer the time a slow signal, bound, invocation or input getter takes: the call layer is given the bound as the application gave it, each getter read once, and its ending is returned unchanged", async (t) => {
 	const { topology, entry } = await setup(t, { count: 3 });
 	const client = clientOf(topology, "alice", { bound: 10 });
 	const reads = { n: 0 };
@@ -393,16 +414,18 @@ test("findPage, a write and a read each spend from their bound the time a slow s
 	let n = 0;
 	for (const [name, single] of Object.entries(SINGLES)) {
 		for (const [what, prepare] of Object.entries(preparations)) {
-			for (const [ms, bound] of [[3.4, 6], [9, 1]]) {
+			for (const ms of [3.4, 9]) {
 				for (const given of [entry.caller.newInvocation(), undefined]) {
 					const label = `${name}, a slow ${what} getter spending ${ms} of 10 ms, ${given === undefined ? "no identity given" : "the identity given"}`;
 					const before = entry.calls.length;
 					reads.n = 0;
 					const ending = await within(single.call(client, ...prepare(single.input(++n), ms, given)));
-					assert.equal(reads.n, 1, `${label}: the getter read once, into the snapshot the call layer is given`);
+					assert.equal(reads.n, 1, `${label}: the getter read once, by the call layer`);
 					assert.equal(entry.calls.length, before + 1, `${label}: one invocation`);
-					const made = entry.calls.at(-1);
-					assert.deepEqual({ ...made, signal: undefined }, { host: "host-a", service: "store", operation: single.operation, input: single.input(n), bound, ...(given === undefined ? {} : { invocation: given }), signal: undefined }, label);
+					const made = requested(entry.calls.at(-1));
+					assert.equal(reads.n, 1, `${label}: the option getters give what they first read`);
+					assert.deepEqual(made, { host: "host-a", service: "store", operation: single.operation, input: made.input, bound: 10, ...(given === undefined ? {} : { invocation: given }) }, label);
+					if (what !== "input") assert.deepEqual(made.input, single.input(n), `${label}: the input as given`);
 					assert.equal(ending, await entry.endings.at(-1), `${label}: the call layer's ending, unchanged`);
 					assert.equal(ending.ending, "answered", label);
 					if (given !== undefined) assert.equal(ending.invocation, given, label);
@@ -413,7 +436,7 @@ test("findPage, a write and a read each spend from their bound the time a slow s
 });
 
 test("a programming error a single call or a whole find finds once its bound has passed is still thrown, and nothing is sent", async (t) => {
-	const { topology, entry } = await setup(t, { count: 3 });
+	const { topology, entry, arrived } = await setup(t, { count: 3 });
 	const client = clientOf(topology, "alice", { bound: 10 });
 	const late = () => topology.hooks.moveCallClock(20);
 	const cyclic = (input) => { const value = { ...input, get extra() { late(); return value; } }; return value; };
@@ -431,11 +454,13 @@ test("a programming error a single call or a whole find finds once its bound has
 		for (const [what, type, prepare] of errors) await assert.rejects(single.call(client, ...prepare(single.input(++n))), type, `${name}, ${what}`);
 	}
 	await assert.rejects(client.create(SINGLES.create.input(++n), { repeat: "yes", get signal() { late(); return undefined; } }), TypeError, "a write's repeat flag that is not a boolean");
-	assert.equal(entry.calls.length, 0, "nothing was sent");
+	assert.equal(arrived(), 0, "nothing was sent");
+	assert.equal(entry.calls.length, 3 * errors.length + 1, "each single call's error thrown by the call layer it was delegated to; the whole find's by the find, no page handed on");
+	assert.ok((await Promise.allSettled(entry.endings)).every((e) => e.status === "rejected"), "the call layer threw each");
 });
 
-test("an abort signal given that is not one - null, one without aborted, one whose aborted is not a boolean - is a programming error findPage, a write, a read and the whole find each throw, with time left and once a slow invocation getter has spent the whole bound, nothing handed to the call layer; a genuine signal and none given are not", async (t) => {
-	const { topology, entry } = await setup(t, { count: 3 });
+test("an abort signal given that is not one - null, one without aborted, one whose aborted is not a boolean - is a programming error findPage, a write, a read and the whole find each throw, with time left and once a slow invocation getter has spent the whole bound, nothing sent; a genuine signal and none given are not", async (t) => {
+	const { topology, entry, arrived } = await setup(t, { count: 3 });
 	const client = clientOf(topology, "alice", { bound: 10 });
 	const calls = { ...SINGLES, find: { operation: "find", call: (c, input, o) => c.find(input, o), input: () => ({ kind: "any" }) } };
 	const malformed = [["a null signal", null], ["a signal without aborted", {}], ["a signal whose aborted is not a boolean", { aborted: 0 }]];
@@ -446,28 +471,29 @@ test("an abort signal given that is not one - null, one without aborted, one who
 		for (const spend of [0, 10, 20]) {
 			const when = spend === 0 ? "with time left" : `a getter spending ${spend} of 10 ms`;
 			for (const [what, signal] of malformed) {
-				const before = entry.calls.length;
+				const before = arrived();
 				await assert.rejects(within(single.call(client, single.input(++n), prepared(spend, signal))), TypeError, `${name}, ${what}, ${when}`);
-				assert.equal(entry.calls.length, before, `${name}, ${what}, ${when}: nothing handed to the call layer`);
+				assert.equal(arrived(), before, `${name}, ${what}, ${when}: nothing sent`);
 			}
 			for (const [what, signal] of controls) {
-				const before = entry.calls.length;
+				const before = arrived();
 				const ending = await within(single.call(client, single.input(++n), prepared(spend, signal)));
 				if (spend === 0) {
-					assert.ok(entry.calls.length > before, `${name}, ${what}, ${when}: handed to the call layer`);
+					assert.ok(arrived() > before, `${name}, ${what}, ${when}: sent`);
 					assert.equal(entry.calls.at(-1).signal, signal, `${name}, ${what}, ${when}: the signal handed on as given`);
 					assert.equal(ending.ending, "answered", `${name}, ${what}, ${when}`);
 				} else {
 					assert.deepEqual([ending.ending, ending.reason], ["unknown", "bound-passed"], `${name}, ${what}, ${when}`);
-					assert.equal(entry.calls.length, before, `${name}, ${what}, ${when}: nothing handed to the call layer`);
+					assert.equal(arrived(), before, `${name}, ${what}, ${when}: nothing sent`);
 				}
 			}
 		}
 	}
 });
 
-test("a whole find and findPage end bound-passed alike for the same slow signal, bound, invocation or input getter, the find with attempt null, findPage with a new attempt identity, under the identity given or a new one", async (t) => {
-	const { topology, entry } = await setup(t, { count: 3 });
+test("a whole find and findPage end bound-passed alike for the same slow signal, bound, invocation or input getter, the find with attempt null and the client's identity, findPage as the call layer ends it, with a new attempt identity, under the identity given or a new one", async (t) => {
+	const callerIds = countingIdentities();
+	const { topology, entry, arrived } = await setup(t, { count: 3, identities: callerIds.source });
 	const ids = countingIdentities();
 	const client = clientOf(topology, "alice", { bound: 10, identities: ids.source });
 	for (const [what, prepare] of Object.entries(slowGetters((ms) => topology.hooks.moveCallClock(ms)))) {
@@ -476,13 +502,16 @@ test("a whole find and findPage end bound-passed alike for the same slow signal,
 			const wholeInvocation = given ?? `1791540000123-${ids.ahead(1, 16)}`;
 			const whole = await within(client.find(...prepare({ kind: "any" }, 20, given)));
 			assert.deepEqual(whole, passed("find", wholeInvocation, null), `the find, ${label}`);
-			const pageInvocation = given ?? `1791540000123-${ids.ahead(1, 16)}`;
+			const pageInvocation = given ?? `1791540000123-${callerIds.ahead(1, 16)}`;
+			const pageAttempt = `${pageInvocation}.${callerIds.ahead(given === undefined ? 2 : 1, 8)}`;
 			const page = await within(client.findPage(...prepare({ kind: "any" }, 20, given)));
-			assert.deepEqual(page, passed("find", pageInvocation, `${pageInvocation}.${ids.ahead(0, 8)}`), `findPage, ${label}`);
+			assert.deepEqual(page, passed("find", pageInvocation, pageAttempt), `findPage, ${label}`);
+			assert.equal(page, await entry.endings.at(-1), `findPage, ${label}: the call layer's ending`);
 			assert.deepEqual({ ...whole, invocation: "", attempt: "" }, { ...page, invocation: "", attempt: "" }, `${label}: the same ending but for its identities`);
 		}
 	}
-	assert.equal(entry.calls.length, 0, "nothing was handed to the call layer");
+	assert.equal(arrived(), 0, "nothing was sent");
+	assert.equal(entry.calls.length, 8, "only findPage was handed to the call layer");
 });
 
 test("time passing while the call layer prepares the first page, or a later one, is taken from that page's bound: the find ends unknown, no page is answered after its deadline, and nothing further is sent", async (t) => {
@@ -528,6 +557,40 @@ test("a final page that cannot be accepted - its answer coming once the find's d
 	const late = await createStoreClient({ caller, host: "host-a", service: "store", bound: 1000, clock }).find({ kind: "any" }, { invocation: ID });
 	assert.equal(asked.length, 2);
 	assert.deepEqual(late, { ending: "unknown", invocation: ID, attempt: `${ID}.00000001`, operation: "find", reason: "bound-passed", agpCode: null, deliveryReport: null }, "a caller answering after the deadline is not taken");
+});
+
+test("a page ending other than answered ends the find as that page ended whenever it is observed, at or after the find's deadline included, while an answered page observed then loses to the deadline (EM10, step 5)", async () => {
+	const refusal = Object.freeze({ part: "entity-store", code: "position-not-held", what: "w", why: "y", fix: "f", details: Object.freeze({ position: 4 }) });
+	const others = {
+		refused: (address) => ({ ending: "refused", ...address, refusal }),
+		"not-delivered": (address) => ({ ending: "not-delivered", ...address, agpCode: "NO_ROUTE", proxyCode: null, earlierAttemptsUncertain: false }),
+		unknown: (address) => ({ ending: "unknown", ...address, reason: "operation-failed", agpCode: null, deliveryReport: "delivered" }),
+		"answered (control)": (address) => ({ ending: "answered", ...address, answer: { position: 4, entries: [], next: null } }),
+	};
+	for (const [what, make] of Object.entries(others)) {
+		for (const [page, late] of [[1, 1000], [2, 1000], [2, 1500]]) {
+			const clock = createManualCallClock(0);
+			const asked = [];
+			const caller = {
+				async invoke(call) {
+					asked.push(call);
+					const n = asked.length;
+					const invocation = call.invocation ?? `179154000000${n}-0123456789abcdef`;
+					const address = { invocation, attempt: `${invocation}.0000000${n}`, operation: "find" };
+					if (n < page) return Object.freeze({ ending: "answered", ...address, answer: { position: 4, entries: [{ name: "a" }], next: "a" } });
+					clock.move(late - clock.now());
+					return Object.freeze(make(address));
+				},
+			};
+			const ending = await createStoreClient({ caller, host: "host-a", service: "store", bound: 1000, clock }).find({ kind: "any" }, { invocation: ID });
+			const label = `page ${page} ending ${what}, observed ${late} ms after the find began`;
+			assert.equal(asked.length, page, label);
+			const first = { invocation: ID, attempt: `${ID}.00000001` };
+			if (what === "answered (control)") assert.deepEqual(ending, passed("find", ID, first.attempt), `${label}: the deadline wins`);
+			else assert.deepEqual(ending, { ...make({ invocation: "", attempt: "", operation: "find" }), ...first }, `${label}: ended as the page ended`);
+			assert.ok(Object.isFrozen(ending), label);
+		}
+	}
 });
 
 test("a whole find's input is read as the call layer reads it: deep JSON reaches the call layer, which refuses it as not sendable; a cycle or a getter that throws is a programming error, nothing sent; an object reached twice and its getters are read once", async (t) => {

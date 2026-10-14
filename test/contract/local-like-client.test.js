@@ -8,13 +8,14 @@
 // the call or the client names, and a write's invocation and repeat flag; the ending is the call layer's,
 // unchanged; each write's identity is its invocation identity, in the store's change log; any object offering
 // the caller's interface serves, as operation-proxy's client half does; and the client's programming errors
-// are thrown with nothing sent, each found by the client itself, as it reads the call (EM10), before the call
-// layer is reached.
+// are thrown with nothing sent: a single call's by the call layer it delegates to, which reads and checks its
+// options and input (EM10, EM12; zorg's D55), and a whole find's by the find itself, as it reads the call,
+// before any page is handed to the call layer.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createStoreClient } from "@apnex/entity-api";
 import { openTopology, within } from "../support/topology.js";
-import { answerOf, clientOf, note, openStore, serve, T0 } from "../support/serving.js";
+import { answerOf, clientOf, note, openStore, requested, serve, T0 } from "../support/serving.js";
 
 async function setup(t) {
 	const topology = await openTopology({ callers: ["alice"] });
@@ -68,7 +69,7 @@ test("each operation is one invocation of the operation of its name, pinned to t
 		const before = entry.calls.length;
 		await within(call());
 		assert.equal(entry.calls.length, before + 1, `${operation} is one invocation`);
-		const made = entry.calls.at(-1);
+		const made = requested(entry.calls.at(-1));
 		assert.deepEqual({ ...made, signal: undefined }, { host: "host-a", service: "store", operation, input, bound, signal: undefined });
 	}
 	assert.equal(entry.calls[0].signal, signal, "the signal is the caller's own");
@@ -84,7 +85,7 @@ test("a write's invocation identity and repeat flag reach the call layer; a read
 	await within(client.create(note("alpha"), { invocation: id, repeat: true }));
 	assert.deepEqual([entry.calls.at(-1).invocation, entry.calls.at(-1).repeat], [id, true]);
 	await within(client.update({ target: { id: "e1.1" }, name: "b" }, { repeat: false }));
-	assert.deepEqual([entry.calls.at(-1).invocation, entry.calls.at(-1).repeat], [undefined, false]);
+	assert.deepEqual([entry.calls.at(-1).invocation, entry.calls.at(-1).repeat, "repeat" in entry.calls.at(-1)], [undefined, false, true]);
 	const readId = entry.caller.newInvocation();
 	await within(client.read({ target: { id: "e1.1" } }, { invocation: readId, repeat: true }));
 	assert.deepEqual([entry.calls.at(-1).invocation, "repeat" in entry.calls.at(-1)], [readId, false]);
@@ -115,7 +116,7 @@ test("any object offering the caller's interface serves the client, as operation
 	assert.equal(answerOf(await within(client.find({ kind: "note" }))).entries.length, 1);
 });
 
-test("the client's programming errors are thrown, and nothing is sent", async (t) => {
+test("the client's programming errors are thrown, and nothing is sent: a single call's by the call layer it delegates to, a whole find's by the find before any page is handed on", async (t) => {
 	const { entry, topology } = await setup(t);
 	const caller = entry.caller;
 	assert.throws(() => createStoreClient(), TypeError);
@@ -125,18 +126,27 @@ test("the client's programming errors are thrown, and nothing is sent", async (t
 	assert.throws(() => createStoreClient({ caller, host: "host-a", service: "store", bound: 0 }), RangeError);
 	assert.throws(() => createStoreClient({ caller, host: "host-a", service: "store", clock: {} }), TypeError);
 	const unbounded = createStoreClient({ caller, host: "host-a", service: "store", clock: topology.callClock });
-	const before = entry.calls.length;
-	await assert.rejects(unbounded.create(note("alpha")), RangeError, "a call with no bound, given or by default");
-	await assert.rejects(unbounded.find({ kind: "note" }), RangeError);
 	const client = clientOf(topology, "alice");
-	await assert.rejects(client.read({ target: { id: "e1.1" } }, { bound: 2147483648 }), RangeError);
+	const singles = [
+		[() => unbounded.create(note("alpha")), RangeError, "a call with no bound, given or by default"],
+		[() => client.read({ target: { id: "e1.1" } }, { bound: 2147483648 }), RangeError, "a bound out of range"],
+		[() => client.create(note("alpha"), { invocation: "not-an-identity" }), TypeError, "an invocation not as EM11 writes it"],
+		[() => client.read({ target: {} }, "fast"), TypeError, "options that are not an object"],
+		[() => client.read({ target: [() => 1] }), TypeError, "an input that is not JSON"],
+		[() => client.update({ target: { id: "e1.1" } }, { repeat: "yes" }), TypeError, "a repeat flag that is not a boolean"],
+	];
+	for (const [call, type, what] of singles) {
+		const before = entry.calls.length;
+		await assert.rejects(call(), type, what);
+		assert.equal(entry.calls.length, before + 1, `${what}: delegated to the call layer`);
+		await assert.rejects(entry.endings.at(-1), type, `${what}: thrown by the call layer, which checks the call it reads`);
+	}
+	const before = entry.calls.length;
+	await assert.rejects(unbounded.find({ kind: "note" }), RangeError);
 	await assert.rejects(client.find({ kind: "note" }, { bound: 1.5 }), RangeError);
-	await assert.rejects(client.create(note("alpha"), { invocation: "not-an-identity" }), TypeError);
 	await assert.rejects(client.find({ kind: "note" }, { invocation: "not-an-identity" }), TypeError);
 	await assert.rejects(client.find({ kind: "note", tags: [() => 1] }), TypeError);
-	await assert.rejects(client.read({ target: {} }, "fast"), TypeError);
-	await assert.rejects(client.read({ target: [() => 1] }), TypeError);
-	await assert.rejects(client.update({ target: { id: "e1.1" } }, { repeat: "yes" }), TypeError);
-	assert.equal(entry.calls.length - before, 0, "the client checks every call's arguments itself, as it reads them, so none reached the call layer");
+	await assert.rejects(client.find({ kind: "note" }, "fast"), TypeError);
+	assert.equal(entry.calls.length - before, 0, "the whole find checks its arguments itself, as it reads them, so no page reached the call layer");
 	assert.equal(answerOf(await within(client.historyBound())).position, 0, "nothing was sent");
 });

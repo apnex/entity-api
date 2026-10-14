@@ -7,9 +7,11 @@
 // input, and is asked for writes only; a client whose evidence is bob, sending a write that claims alice as
 // its writer, is refused and nothing is recorded; a writer naming that names no writer leaves the policy to
 // refuse; one that throws, gives something other than a string, or answers with a promise ends the invocation
-// unknown before the policy is asked, with nothing written; one giving an object with an own then getter,
-// giving a function or a non-function, has that then read exactly once, a function observed through it with
-// two handlers, and ends the same way, with no rejection unhandled; a repeat is recognised only from the writer that
+// unknown before the policy is asked, with nothing written; one giving anything else is never read (zorg's D54,
+// D55): an own then getter, enumerable or not, giving a function, a non-function or a promise, or throwing, a
+// promise in an own data property named then, hidden as non-enumerable or nested, and a Proxy whose traps
+// throw, each end the same way, no getter or function of it run, every promise in it observed, no rejection
+// unhandled, and the host serving on; a repeat is recognised only from the writer that
 // made the change, since the writer is part of the digest; a repeated rename whose old name another agent
 // has since taken returns the first answer, with the first writer; the evidence reaches the writer naming as a
 // deeply frozen JSON snapshot, which it cannot change for the policy or a later request; and describe,
@@ -111,35 +113,46 @@ test("a writer naming that throws, gives anything but a string or null, or answe
 	await new Promise((resolve) => setTimeout(resolve, 20));
 });
 
-test("a writer naming giving an object with an own then getter, giving a function or a non-function, has that then read exactly once, a function observed through it with two handlers, and ends the invocation unknown before the policy is asked, with nothing written and no rejection unhandled", async (t) => {
+test("a writer naming giving anything but a string or null is never read: a then getter, enumerable or not, giving a function, a non-function or a rejected promise, or throwing, a rejected promise as own then data, hidden as non-enumerable data or nested, and a Proxy whose traps throw, each end the invocation unknown before the policy is asked, no getter or function of it run, every promise in it observed, nothing written, no rejection unhandled, and the host serving on", async (t) => {
 	const escaped = [];
 	const onUnhandled = (reason) => { escaped.push(reason); };
 	process.on("unhandledRejection", onUnhandled);
 	t.after(() => process.off("unhandledRejection", onUnhandled));
-	let reads = 0;
-	let observed = [];
-	/** The then getter: counts each read, and gives a function forwarding to a promise rejecting at once, or a string. */
-	const thenGetter = (gives) => function () {
-		reads++;
-		if (gives === "a non-function") return "not a function";
-		const rejected = Promise.reject(new Error("a writer naming's then getter's promise, rejecting at once"));
-		return (onFulfilled, onRejected) => { observed.push([typeof onFulfilled, typeof onRejected]); return rejected.then(onFulfilled, onRejected); };
+	const ran = [];
+	const rejected = () => Promise.reject(new Error("a writer naming's promise, rejecting at once"));
+	const later = () => new Promise((_resolve, reject) => setTimeout(() => reject(new Error("a writer naming's promise, rejecting later")), 10));
+	const gives = {
+		"a function": () => (onFulfilled, onRejected) => { ran.push("then called"); return rejected().then(onFulfilled, onRejected); },
+		"a non-function": () => "not a function",
+		"a rejected promise": rejected,
+		"a throw": () => { throw new Error("a then getter that throws"); },
 	};
-	let gives = "a function";
-	const nameWriter = () => Object.defineProperty({ writer: "alice" }, "then", { get: thenGetter(gives), enumerable: true, configurable: true });
-	const { clients: { alice }, policyAsked, store } = await setup(t, { callers: ["alice"], nameWriter });
-	for (gives of ["a function", "a non-function"]) {
-		reads = 0;
-		observed = [];
+	const withThen = (what, enumerable) => Object.defineProperty({ writer: "alice" }, "then", { get() { ran.push(`then getter giving ${what}`); return gives[what](); }, enumerable, configurable: true });
+	const NAMINGS = {
+		...Object.fromEntries(Object.keys(gives).flatMap((what) => [true, false].map((enumerable) => [`a${enumerable ? "n" : " non-"} enumerable then getter giving ${what}`, () => withThen(what, enumerable)]))),
+		"a rejected promise as own then data": () => ({ writer: "alice", then: rejected() }),
+		"a promise rejecting later as own then data": () => ({ writer: "alice", then: later() }),
+		"a rejected promise hidden as non-enumerable data": () => Object.defineProperty({ writer: "alice" }, "hidden", { value: rejected() }),
+		"a rejected promise nested in a list": () => [{ writer: [rejected()] }],
+		"a Proxy whose traps throw": () => new Proxy({}, Object.fromEntries(["get", "getOwnPropertyDescriptor", "ownKeys", "getPrototypeOf", "has"].map((trap) => [trap, () => { ran.push(`${trap} trap`); throw new Error("a trap that throws"); }]))),
+	};
+	// Traps the reader runs without running any code of the application's own: listing keys and the prototype.
+	const READER_TRAPS = new Set(["ownKeys trap", "getPrototypeOf trap", "getOwnPropertyDescriptor trap"]);
+	let naming = () => "alice";
+	const { clients: { alice }, policyAsked, store } = await setup(t, { callers: ["alice"], nameWriter: () => naming() });
+	for (const [what, name] of Object.entries(NAMINGS)) {
+		ran.length = 0;
+		naming = name;
 		const ending = await within(alice.create(note("alpha")));
-		assert.equal(reads, 1, `then giving ${gives}: then read exactly once`);
-		assert.deepEqual([ending.ending, ending.reason, ending.agpCode], ["unknown", "operation-failed", null], `then giving ${gives}`);
-		assert.deepEqual(observed, gives === "a function" ? [["function", "function"]] : [], `then giving ${gives}: a function observed once, through the function read, with two handlers; anything else never called`);
+		assert.deepEqual([ending.ending, ending.reason, ending.agpCode], ["unknown", "operation-failed", null], what);
+		assert.deepEqual(ran.filter((r) => !READER_TRAPS.has(r)), [], `${what}: no getter, function or get trap run`);
 	}
 	assert.equal(policyAsked.length, 0, "the policy was never asked");
 	assert.equal(store.historyBound().answer.position, 0, "nothing was written");
 	await new Promise((resolve) => setTimeout(resolve, 50));
 	assert.deepEqual(escaped, [], "no rejection went unhandled");
+	naming = () => "alice";
+	assert.equal(answerOf(await within(alice.create(note("after")))).entity.created.writer, "alice", "the host serves on");
 });
 
 test("a repeat is recognised only from the writer that made the change: the same invocation and input from another caller is refused as identity-reused", async (t) => {

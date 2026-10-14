@@ -5,7 +5,8 @@
 // or deferred with a ruling, and every row of entity-api that zorg's Delta 1 fences is served and has a
 // contract test file named for it. The client half runs in a client, so the source imports no module
 // particular to one runtime outside a file whose name ends -adapter.ts and uses no global particular to Node
-// (principle 6; D31); AGP reaches it as types only; and no source file reads a clock or randomness itself:
+// (principle 6; D31); AGP reaches it as types only, and only operation-call and shape-check (D55) at run time;
+// and no source file reads a clock or randomness itself:
 // time and identities come through operation-call's ports.
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -81,7 +82,7 @@ const builtins = new Set(builtinModules.flatMap((m) => [m, `node:${m}`]));
 
 test("no source file imports a module particular to one runtime outside a file whose name ends -adapter.ts, or uses a global particular to Node", () => {
 	const files = tsSources();
-	assert.ok(files.length >= 5);
+	assert.ok(files.length >= 4);
 	for (const file of files) {
 		if (file.endsWith("-adapter.ts")) continue;
 		const text = fs.readFileSync(file, "utf8");
@@ -91,11 +92,11 @@ test("no source file imports a module particular to one runtime outside a file w
 	}
 });
 
-test("AGP reaches the source as types only, and the only modules imported at run time are operation-call's and the package's own", () => {
+test("AGP reaches the source as types only, and the only modules imported at run time are operation-call's, shape-check's and the package's own", () => {
 	for (const file of tsSources()) {
 		for (const { typeOnly, specifier } of imports(fs.readFileSync(file, "utf8"))) {
 			if (typeOnly || specifier.startsWith("./")) continue;
-			assert.ok(["@apnex/operation-call", "@apnex/operation-call/message-format"].includes(specifier), `${path.relative(root, file)} imports ${specifier} at run time`);
+			assert.ok(["@apnex/operation-call", "@apnex/operation-call/message-format", "@apnex/shape-check"].includes(specifier), `${path.relative(root, file)} imports ${specifier} at run time`);
 		}
 	}
 });
@@ -107,8 +108,8 @@ test("no source file reads a clock or randomness itself: they come through the p
 	}
 });
 
-test("the package depends on entity-store, operation-call and AGP's node through file: links to checkouts beside it, and on nothing else at run time", () => {
-	assert.deepEqual(pkg.dependencies, { "@agp/node": "file:../agp/packages/node", "@apnex/entity-store": "file:../entity-store", "@apnex/operation-call": "file:../operation-call" });
+test("the package depends on entity-store, operation-call, shape-check and AGP's node through file: links to checkouts beside it, and on nothing else at run time", () => {
+	assert.deepEqual(pkg.dependencies, { "@agp/node": "file:../agp/packages/node", "@apnex/entity-store": "file:../entity-store", "@apnex/operation-call": "file:../operation-call", "@apnex/shape-check": "file:../shape-check" });
 	for (const [name, spec] of Object.entries(pkg.devDependencies)) {
 		if (name.startsWith("@agp/") || name.startsWith("@apnex/")) assert.match(spec, /^file:\.\.\//, `${name} is linked from a checkout beside this one`);
 	}

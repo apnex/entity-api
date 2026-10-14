@@ -5,8 +5,10 @@
 // once into one deeply frozen JSON snapshot equal to it, and AGP's delivery context as AGP gave it to the
 // evidence function, naming the caller's node as the origin; an evidence function answering asynchronously is
 // awaited; with no evidence function the evidence is null and the delivery context still arrives; an evidence
-// function that fails, and evidence that is not a JSON value, end the invocation unknown with operation-failed
-// before the writer naming or the policy is asked.
+// function that fails, and evidence that is not plain JSON data - read through shape-check's readPlainJson,
+// running none of its code (zorg's D54, D55): a getter, which is never run, a class instance, an inherited, a
+// non-enumerable or a symbol field, or a promise within, which is observed - end the invocation unknown with
+// operation-failed before the writer naming or the policy is asked, no rejection unhandled.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { within } from "../support/topology.js";
@@ -81,7 +83,7 @@ test("an evidence function that fails ends the invocation unknown with operation
 	assert.equal(store.historyBound().answer.position, 0);
 });
 
-test("evidence that is not a JSON value, or that cannot be read, ends the invocation unknown with operation-failed, before the writer naming or the policy is asked", async (t) => {
+test("evidence that is not plain JSON data, or that cannot be read, ends the invocation unknown with operation-failed, before the writer naming or the policy is asked", async (t) => {
 	const asked = [];
 	const cyclic = { node: "alice" };
 	cyclic.self = cyclic;
@@ -92,7 +94,19 @@ test("evidence that is not a JSON value, or that cannot be read, ends the invoca
 		() => ({ node: "alice", n: Number.NaN }),
 		() => ({ get node() { throw new Error("a getter that throws"); } }),
 		() => ({ node: "alice", nested: [1, undefined] }),
+		() => ({ get node() { ran.push("a getter giving a name"); return "alice"; } }),
+		() => new (class Evidence { constructor() { this.node = "alice"; } })(),
+		() => Object.create({ node: "alice" }),
+		() => Object.defineProperty({ node: "alice" }, "hidden", { value: 1 }),
+		() => ({ node: "alice", [Symbol("extra")]: 1 }),
+		() => ({ node: "alice", then: Promise.reject(new Error("evidence holding a promise, rejecting at once")) }),
+		() => ({ node: "alice", nested: { get then() { ran.push("a then getter"); return undefined; } } }),
 	];
+	const ran = [];
+	const escaped = [];
+	const onUnhandled = (reason) => { escaped.push(reason); };
+	process.on("unhandledRejection", onUnhandled);
+	t.after(() => process.off("unhandledRejection", onUnhandled));
 	let which = 0;
 	const { clients: { alice }, store } = await served(t, {
 		callers: ["alice"],
@@ -108,4 +122,7 @@ test("evidence that is not a JSON value, or that cannot be read, ends the invoca
 	}
 	assert.deepEqual(asked, []);
 	assert.equal(store.historyBound().answer.position, 0);
+	assert.deepEqual(ran, [], "no getter of the evidence was run");
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.deepEqual(escaped, [], "no rejection went unhandled");
 });

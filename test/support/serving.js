@@ -56,6 +56,19 @@ export function clientOf(topology, name, { host = "host-a", service = "store", b
 	return createStoreClient({ caller: topology.caller(name).caller, host, service, bound, clock: clock ?? topology.callClock, ...(identities ? { identities } : {}) });
 }
 
+/**
+ * A call request as the call layer reads it: each field of CallRequest the request gives a value, read once
+ * here - a single call's option getters give the value they first read at every read (EM10, D55).
+ */
+export function requested(call) {
+	const fields = {};
+	for (const name of ["host", "service", "operation", "input", "bound", "invocation", "repeat", "signal"]) {
+		const value = call[name];
+		if (value !== undefined) fields[name] = value;
+	}
+	return fields;
+}
+
 /** The answer of an ending that must be answered. */
 export function answerOf(ending, what = "the call") {
 	if (ending.ending !== "answered") throw new Error(`${what}: expected an answer, got ${JSON.stringify(ending)}`);

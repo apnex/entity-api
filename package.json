@@ -33,7 +33,8 @@
   "dependencies": {
     "@agp/node": "file:../agp/packages/node",
     "@apnex/entity-store": "file:../entity-store",
-    "@apnex/operation-call": "file:../operation-call"
+    "@apnex/operation-call": "file:../operation-call",
+    "@apnex/shape-check": "file:../shape-check"
   },
   "devDependencies": {
     "@agp/core": "file:../agp/packages/core",

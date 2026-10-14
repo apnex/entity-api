@@ -18,8 +18,10 @@
  *    the store, whose answer or refusal is returned unchanged.
  *
  * A read, a find and `history-bound` are ruled on by the policy before the store answers them. entity-api
- * decides nothing itself: it never refuses for its own reasons, and owns no refusal code. Nothing here is
- * particular to one runtime (zorg's D31).
+ * decides nothing itself: it never refuses for its own reasons, and owns no refusal code. The caller's
+ * evidence, the writer's name and the policy's ruling and refusal are read as plain data through shape-check's
+ * `plain-json-value` and operation-call's `readRefusalRecord`, running none of their code (zorg's D54, D55).
+ * Nothing here is particular to one runtime (zorg's D31).
  */
 import type { AgpNode } from "@agp/node";
 import type { EntityEnvelope, EntityStore, RepeatCheck, StoreOutcome, WriteContext } from "@apnex/entity-store";
@@ -33,15 +35,17 @@ import {
 	type OperationContext,
 	type OperationResult,
 	type RefusalRecord,
+	readRefusalRecord,
 } from "@apnex/operation-call";
-import { frozenSnapshot, snapshotJson, type Meeting, type MemberRead } from "./json.js";
+import { observePromises, readPlainJson } from "@apnex/shape-check";
 import { inputShape, isWrite, STORE_OPERATIONS, type StoreOperation, type WriteOperation } from "./store-operations.js";
 
 /** What the application's writer naming is given: the caller's evidence, and AGP's delivery context. */
 export interface CallerEvidence {
 	/**
-	 * The answer of the evidence function the host was given - in zorg, caller-identity's record - or null, as a
-	 * deeply frozen JSON snapshot read once; evidence that is not a JSON value ends the invocation failed (EM13).
+	 * The answer of the evidence function the host was given - in zorg, caller-identity's record - or null, read
+	 * once as plain data into a deeply frozen JSON value; evidence that is not plain JSON ends the invocation
+	 * failed (EM13; zorg's D54).
 	 */
 	readonly evidence: JsonValue;
 	/** AGP's delivery context for the request, as AGP gave it (`peer-identity-evidence`). */
@@ -105,81 +109,53 @@ export interface StoreServer {
 /** Whether the store is served: operation-call's host refuses a name EM1's pattern does not allow. */
 export type StoreServing = { readonly served: true; readonly server: StoreServer } | { readonly served: false; readonly refusal: HostRefusal };
 
-/** Reads a value's `then` once, guarded, since a getter may throw: its value, or what reading it threw. */
-function readThen(value: object): MemberRead {
-	try {
-		return { threw: false, value: (value as { then?: unknown }).then };
-	} catch (error) {
-		return { threw: true, error };
-	}
-}
-
-/** A handler that does nothing. */
-const ignore = (): void => undefined;
-
 /**
- * Observes a promise through the `then` already read from it, called with two handlers that do nothing, so a
- * rejection is consumed and `then` is not read again, as Promise.resolve would read it.
+ * Reads what application code handed back, or what entity-api hands it, as plain data through shape-check's
+ * `readPlainJson` (zorg's D54, D55): a fresh deeply frozen plain JSON value, read through own enumerable data
+ * descriptors only, running none of its code. Anything else - a getter, an inherited field, a non-enumerable
+ * property, a symbol, a class instance, a promise, a cycle - is thrown as the application's defect, every
+ * native promise met having been given a handler that does nothing, so operation-call ends the invocation
+ * `failed` with `operation-failed` (EM13).
  */
-function observe(value: object, then: (...handlers: unknown[]) => unknown): void {
-	try {
-		Reflect.apply(then, value, [ignore, ignore]);
-	} catch {
-		// A then that throws has no outcome to consume.
-	}
+function plain(value: unknown, what: string): JsonValue {
+	const reading = readPlainJson(value);
+	if (!reading.ok) throw new TypeError(`${what} must be plain JSON data, read without running any of its code (zorg's D54)`);
+	return reading.value;
 }
 
 /**
- * Asks the policy and reads its ruling once, each field once (EM13). Anything but a synchronous ruling of the
- * declared form is the application's fault, thrown, so operation-call ends the invocation `failed` with
- * `operation-failed` and nothing is written. A promise met anywhere in reading the ruling - as the ruling, as
- * its `allowed`, as its refusal or within the refusal - has its outcome consumed as it is read, before anything
- * further is read, so a getter read later that throws cannot strand it; every one is consumed before the
- * ruling is refused, so none escapes to the host's runtime as an unhandled rejection; nothing is awaited. Each
- * value's `then` is read once: one that is a function makes the value a promise, observed through it; any
- * other is read on, and a refusal's or a refusal member's `then` member is taken from that one read (EM10).
- * The refusal is read once, whole, into a JSON copy equal to it, and that copy is what is passed on.
+ * Asks the policy and reads its ruling once, as plain data (EM13; zorg's D54, D55): through shape-check's
+ * `readPlainJson`, so no getter, `then` probe or other code of the ruling runs, and every native promise met
+ * anywhere in it is given a handler that does nothing; and its refusal through operation-call's
+ * `readRefusalRecord`. The ruling is exactly `{allowed: true}`, or exactly `{allowed: false, refusal}` with a
+ * refusal in EM9's form, passed on as read; anything else, and anything the policy throws, is thrown, so
+ * operation-call ends the invocation `failed` with `operation-failed` and nothing is written. Nothing is awaited.
  */
 function rule(policy: ApplicationPolicy, question: PolicyQuestion): PolicyRuling {
-	const ruling: unknown = policy(question);
-	let promised = false;
-	/** Reads an item's `then` once; a promise met in the ruling is observed, and the ruling then refused; its refusal is read all the same. */
-	const meet = (item: object): Meeting => {
-		const then = readThen(item);
-		if (then.threw || typeof then.value !== "function") return { taken: false, then };
-		observe(item, then.value as (...handlers: unknown[]) => unknown);
-		promised = true;
-		return { taken: true };
-	};
-	const isObject = (value: unknown): value is object => value !== null && (typeof value === "object" || typeof value === "function");
-	if (isObject(ruling) && meet(ruling).taken) {
-		throw new TypeError("the application's policy must rule synchronously, so no change lands between its ruling and the write (EM13)");
+	const ruling = plain(policy(question), "the application's policy's ruling");
+	if (ruling !== null && typeof ruling === "object" && !Array.isArray(ruling)) {
+		const fields = Object.keys(ruling);
+		const { allowed, refusal } = ruling as { readonly allowed?: JsonValue; readonly refusal?: JsonValue };
+		if (allowed === true && fields.length === 1) return { allowed: true };
+		if (allowed === false && fields.length === 2 && Object.hasOwn(ruling, "refusal")) {
+			const record = readRefusalRecord(refusal);
+			if (record.ok) return { allowed: false, refusal: record.refusal };
+			throw new TypeError("the application's policy refused with no refusal record in EM9's form");
+		}
 	}
-	if (ruling === null || typeof ruling !== "object") throw new TypeError("the application's policy ruled with neither { allowed: true } nor { allowed: false, refusal }");
-	// Each field is met as it is read, before the next is read, so a getter that throws later cannot leave a
-	// promise already read unconsumed.
-	const allowed: unknown = (ruling as { allowed?: unknown }).allowed;
-	if (isObject(allowed)) meet(allowed);
-	const refusal: unknown = (ruling as { refusal?: unknown }).refusal;
-	const copy = refusal === undefined ? undefined : snapshotJson(refusal, meet);
-	if (promised) throw new TypeError("the application's policy must rule synchronously, with no promise in its ruling (EM13)");
-	if (allowed === true) return { allowed: true };
-	if (allowed === false && copy !== undefined) return { allowed: false, refusal: copy as RefusalRecord };
 	throw new TypeError("the application's policy ruled with neither { allowed: true } nor { allowed: false, refusal }");
 }
 
 /**
- * Names the writer, checking what the application gave: a string, or null for none. Anything else is thrown;
- * an object or function given has its `then` read once, and one that is a function makes it a promise,
- * observed through that function, so its rejection never goes unhandled (EM10, EM13).
+ * Names the writer, checking what the application gave: a string, or null for none (EM13). Anything else is
+ * thrown, without reading any of it - no `then` is probed and no getter runs - after shape-check's
+ * `observePromises` has given every native promise in it a handler that does nothing, so its rejection never
+ * goes unhandled (zorg's D54, D55).
  */
 function nameFrom(nameWriter: WriterNaming, caller: CallerEvidence): string | null {
 	const writer: unknown = nameWriter(caller);
 	if (writer === null || typeof writer === "string") return writer;
-	if (typeof writer === "object" || typeof writer === "function") {
-		const then = readThen(writer);
-		if (!then.threw && typeof then.value === "function") observe(writer, then.value as (...handlers: unknown[]) => unknown);
-	}
+	observePromises(writer);
 	throw new TypeError("the application's writer naming must give a string, or null when the evidence names no writer");
 }
 
@@ -205,7 +181,7 @@ export async function serveStore(options: StoreServerOptions): Promise<StoreServ
 	/** Resolves the target of an update or delete to the entity it names, if any (EM13, step 3). */
 	const resolve = (input: JsonValue): EntityEnvelope | null => {
 		const read = store.read({ target: (input as { target: { id?: string; kind?: string; name?: string } }).target });
-		return read.outcome === "answered" && read.answer.entity !== null ? frozenSnapshot(read.answer.entity, "the target's envelope") : null;
+		return read.outcome === "answered" && read.answer.entity !== null ? plain(read.answer.entity, "the target's envelope") as unknown as EntityEnvelope : null;
 	};
 
 	/** A write, in EM13's synchronous order; nothing in it awaits. */
@@ -215,7 +191,7 @@ export async function serveStore(options: StoreServerOptions): Promise<StoreServ
 		const check: RepeatCheck = identity === undefined ? { repeat: "none" } : store.checkRepeat(operation, input as never, identity);
 		const repeat = check.repeat === "recognised";
 		const target = repeat || operation === "create" ? null : resolve(input);
-		const ruling = rule(policy, Object.freeze({ operation, input: frozenSnapshot(input, "an operation's input"), evidence, delivery: context.delivery, writer, target, repeat }));
+		const ruling = rule(policy, Object.freeze({ operation, input: plain(input, "an operation's input"), evidence, delivery: context.delivery, writer, target, repeat }));
 		if (!ruling.allowed) return { outcome: "refused", refusal: ruling.refusal };
 		if (check.repeat === "recognised") return { outcome: "answered", answer: check.answer as unknown as JsonValue };
 		if (identity === undefined) throw new Error("the application's policy allowed a write for which its writer naming named no writer, so there is no writer to record");
@@ -228,7 +204,7 @@ export async function serveStore(options: StoreServerOptions): Promise<StoreServ
 
 	/** A read, a find or history-bound: the policy rules, then the store answers. */
 	const answer = (operation: Exclude<StoreOperation, WriteOperation>, input: JsonValue, context: OperationContext, evidence: JsonValue): OperationResult => {
-		const ruling = rule(policy, Object.freeze({ operation, input: frozenSnapshot(input, "an operation's input"), evidence, delivery: context.delivery, writer: null, target: null, repeat: false }));
+		const ruling = rule(policy, Object.freeze({ operation, input: plain(input, "an operation's input"), evidence, delivery: context.delivery, writer: null, target: null, repeat: false }));
 		if (!ruling.allowed) return { outcome: "refused", refusal: ruling.refusal };
 		switch (operation) {
 			case "read": return result(store.read(input as never));
@@ -240,10 +216,11 @@ export async function serveStore(options: StoreServerOptions): Promise<StoreServ
 	try {
 		for (const operation of STORE_OPERATIONS) {
 			const handler = (input: JsonValue, context: OperationContext): OperationResult => {
-				// The request's evidence, read once into a deeply frozen JSON snapshot that the writer naming and the
-				// policy share; evidence that is not a JSON value is the application's defect, thrown, so the
-				// invocation ends `failed` with `operation-failed` before either is asked (EM13).
-				const evidence = frozenSnapshot(context.evidence, "the request's evidence") as JsonValue;
+				// The request's evidence, read once as plain data through shape-check's readPlainJson into a deeply
+				// frozen JSON value that the writer naming and the policy share; evidence that is not plain JSON is
+				// the application's defect, thrown, so the invocation ends `failed` with `operation-failed` before
+				// either is asked (EM13; zorg's D54, D55).
+				const evidence = plain(context.evidence, "the request's evidence");
 				return isWrite(operation) ? write(operation, input, context, evidence) : answer(operation, input, context, evidence);
 			};
 			const declared = await host.declare({ name: operation, input: inputShape(operation) as JsonValue, answers: "whole" }, handler);

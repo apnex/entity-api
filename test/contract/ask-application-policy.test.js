@@ -12,10 +12,16 @@
 // each read once, and a refusal that is a promise, rejecting at once or later, ending the invocation unknown
 // with its outcome consumed, nothing written, and the host serving on; a promise as the ruling's allowed, or
 // within its refusal, rejecting at once or later, for a create and a read, the same, in a child process with
-// no process-wide rejection handler; and the same for a promise met before a getter that throws, at the
-// ruling's top level, in a nested refusal object and in a refusal array member; an own enumerable then
-// getter on the ruling, on a refusal and on a refusal member, giving a function and giving a non-function,
-// each read exactly once, a function observed through itself; the input, the evidence and the target
+// no process-wide rejection handler; and the same for a promise beside a getter, at the ruling's top level,
+// in a nested refusal object and in a refusal array member, and for every form of stage 5's fourth
+// verification. The ruling and its refusal are read as plain data (zorg's D54, D55): no getter, then probe,
+// inherited field or other code of theirs ever runs - a then getter throwing, giving a promise or giving a
+// function, enumerable or not, on the ruling, its refusal or a refusal member, a getter before it, a promise
+// in an own data property named then or hidden as non-enumerable, a class instance, an inherited, symbol,
+// non-enumerable or extra field, an invalid EM9 refusal, and a Proxy whose traps throw each end the
+// invocation unknown with operation-failed, getters unread, every promise met observed, nothing written, no
+// rejection unhandled, and the host serving on; a plain ruling, null-prototype ones and data named then
+// included, is taken, its refusal passed on as it was read; the input, the evidence and the target
 // given as deeply frozen JSON snapshots, which the policy cannot change; describe, operation-call's own,
 // ruled on by no policy and naming no writer; and a policy's denial winning over a reused identity.
 import assert from "node:assert/strict";
@@ -297,72 +303,128 @@ test("a promise met before a getter that throws - the ruling's allowed before it
 	await rejectionChild(t, "met before a throwing getter", ["allowed, then a throwing refusal", "a nested refusal object's member, then a throwing member", "a refusal array member, then a throwing member"]);
 });
 
-test("the policy's ruling is read once, each field once, and its refusal passed on unchanged", async (t) => {
-	const refusal = policyRefusal("not-writer", { writer: "somebody" });
-	const reads = { then: 0, allowed: 0, refusal: 0 };
-	const { clients: { alice }, store } = await setup(t, { callers: ["alice"], policy: () => ({
-		get then() { reads.then++; return undefined; },
-		get allowed() { reads.allowed++; return reads.allowed === 1 ? false : true; },
-		get refusal() { reads.refusal++; return reads.refusal === 1 ? refusal : undefined; },
-	}) });
-	const ending = await within(alice.create(note("alpha")));
-	assert.deepEqual([ending.ending, ending.refusal], ["refused", refusal]);
-	assert.deepEqual(reads, { then: 1, allowed: 1, refusal: 1 });
-	assert.equal(position(store), 0);
+test("each policy form of stage 5's fourth verification, its promises rejecting at once or later, for a create and a read, ends the invocation unknown with operation-failed, no getter run, every promise consumed, nothing written, and the host serving on, in a process with no rejection handler", async (t) => {
+	await rejectionChild(t, "fourth verification", ["a ruling's then getter giving a rejecting promise", "a refusal member's non-enumerable then getter giving a rejecting promise", "a refusal member's throwing getter before a then getter giving a rejecting promise", "a rejecting promise as a ruling's own then data property", "a rejecting promise as a ruling's non-enumerable then data property", "a rejecting promise hidden in a refusal member's non-enumerable data property"]);
 });
 
-test("an own enumerable then getter on the ruling, on a refusal or on a refusal member is read exactly once: a function makes it a promise, observed through that function, ending the invocation unknown with operation-failed; anything else is read on as JSON, its then member taken from that one read", async (t) => {
+/** A refusal of EM9's form, its details a fresh object each time. */
+const declined = (details = {}) => ({ part: "application", code: "declined", what: "Declined", why: "Application rule", fix: "Ask owner", details });
+
+test("a plain ruling is taken as read: { allowed: true } and { allowed: false, refusal }, in either key order and with null prototypes, data named then kept, the refusal passed on as it was when read, deeply frozen, whatever the policy does to it later", async (t) => {
+	const nullProto = (fields) => Object.assign(Object.create(null), fields);
+	const kept = declined({ then: "kept as data", list: [1, { then: null }] });
+	const passedOn = [];
+	const RULINGS = [
+		["allowed", () => ({ allowed: true }), null],
+		["allowed, a null prototype", () => nullProto({ allowed: true }), null],
+		["refused", () => ({ allowed: false, refusal: declined({ n: 1 }) }), declined({ n: 1 })],
+		["refused, refusal first", () => ({ refusal: declined(), allowed: false }), declined()],
+		["refused, null prototypes", () => nullProto({ allowed: false, refusal: nullProto({ ...declined(), details: nullProto({ deep: nullProto({ x: 1 }) }) }) }), declined({ deep: { x: 1 } })],
+		["refused, data named then", () => ({ allowed: false, refusal: declined({ then: "kept as data", list: [1, { then: null }] }) }), kept],
+		["refused with misfits", () => ({ allowed: false, refusal: { ...declined(), misfits: [{ pointer: "", keyword: "type", expected: "object", fit: "a value of the declared shape" }] } }), { ...declined(), misfits: [{ pointer: "", keyword: "type", expected: "object", fit: "a value of the declared shape" }] }],
+		["refused, changed by the policy once ruled", () => {
+			const refusal = declined({ n: 2 });
+			queueMicrotask(() => { refusal.what = "changed"; refusal.details.n = 3; });
+			return { allowed: false, refusal };
+		}, declined({ n: 2 })],
+	];
+	let ruling = () => ({ allowed: true });
+	const { clients: { alice }, store } = await setup(t, { callers: ["alice"], policy: () => {
+		const answer = ruling();
+		passedOn.push(answer);
+		return answer;
+	} });
+	let made = 0;
+	for (const [what, rule, refusal] of RULINGS) {
+		for (const operation of ["create", "read"]) {
+			ruling = rule;
+			const before = position(store);
+			const ending = await within(operation === "create" ? alice.create(note(`p${made++}`)) : alice.read({ target: { id: "e1.1" } }));
+			if (refusal === null) {
+				assert.equal(ending.ending, "answered", `${what}, ${operation}`);
+				assert.equal(position(store), before + (operation === "create" ? 1 : 0), `${what}, ${operation}: written as allowed`);
+			} else {
+				assert.deepEqual([ending.ending, ending.refusal], ["refused", refusal], `${what}, ${operation}: the refusal passed on as it was read`);
+				assert.equal(position(store), before, `${what}, ${operation}: nothing written`);
+			}
+		}
+	}
+});
+
+test("the ruling is read as plain data, running none of its code: every form of stage 5's fourth verification - a then getter throwing, enumerable or not, on the ruling, its refusal or a refusal member, a then getter giving a rejected promise on the ruling or a refusal member, a getter that throws before it - and a then getter giving a function, a getter of allowed or refusal, a promise as own then data, enumerable or not, or hidden in non-enumerable data, a class instance, an inherited, symbol, non-enumerable or extra field, an invalid EM9 refusal, a value that is no object, and a Proxy whose traps throw, each end the invocation unknown with operation-failed: no getter runs, every promise met is observed, nothing is written, no rejection goes unhandled, and the host serves on", async (t) => {
 	const escaped = [];
 	const onUnhandled = (reason) => { escaped.push(reason); };
 	process.on("unhandledRejection", onUnhandled);
 	t.after(() => process.off("unhandledRejection", onUnhandled));
-	const NOT_A_FUNCTION = "not a function";
-	let reads = 0;
-	let observed = [];
-	/** The then getter: counts each read, and gives a function forwarding to a promise rejecting at once, or a string. */
-	const thenGetter = (gives) => function () {
-		reads++;
-		if (gives === "a non-function") return NOT_A_FUNCTION;
-		const rejected = Promise.reject(new Error("a then getter's promise, rejecting at once"));
-		return (onFulfilled, onRejected) => { observed.push([typeof onFulfilled, typeof onRejected]); return rejected.then(onFulfilled, onRejected); };
+	const ran = [];
+	const getter = (what, gives) => function () { ran.push(what); return gives(); };
+	const throws = () => { throw new Error("policy member reading"); };
+	const rejected = () => Promise.reject(new Error("policy member outcome"));
+	const thenable = () => (onFulfilled, onRejected) => { ran.push("thenable called"); return rejected().then(onFulfilled, onRejected); };
+	const withGetter = (object, name, gives, enumerable = true) => Object.defineProperty(object, name, { get: getter(name, gives), enumerable, configurable: true });
+	const withData = (object, name, value, enumerable = true) => Object.defineProperty(object, name, { value, enumerable, writable: true, configurable: true });
+	class Ruling { constructor() { this.allowed = true; } }
+	const FORMS = {
+		// The eight forms of the fourth verification's policy-answer-reading probe, but its ordinary control.
+		"a ruling's enumerable then getter throwing": () => withGetter({ allowed: true }, "then", throws),
+		"a refusal's enumerable then getter throwing": () => ({ allowed: false, refusal: withGetter(declined(), "then", throws) }),
+		"a refusal's non-enumerable then getter throwing": () => ({ allowed: false, refusal: withGetter(declined(), "then", throws, false) }),
+		"a refusal member's non-enumerable then getter throwing": () => ({ allowed: false, refusal: declined({ member: withGetter({ kept: 1 }, "then", throws, false) }) }),
+		"a ruling's then getter giving a rejected promise": () => withGetter({ allowed: true }, "then", rejected),
+		"a refusal member's non-enumerable then getter giving a rejected promise": () => ({ allowed: false, refusal: declined({ member: withGetter({ kept: 1 }, "then", rejected, false) }) }),
+		"a refusal member's getter throwing before a then getter giving a rejected promise": () => ({ allowed: false, refusal: declined({ member: withGetter(withGetter({}, "before", throws), "then", rejected) }) }),
+		// Beyond them.
+		"a ruling's then getter giving a function": () => withGetter({ allowed: true }, "then", thenable),
+		"a ruling's non-enumerable then getter giving a function": () => withGetter({ allowed: true }, "then", thenable, false),
+		"a refusal's then getter giving a function": () => ({ allowed: false, refusal: withGetter(declined(), "then", thenable) }),
+		"a getter of allowed": () => withGetter({}, "allowed", () => true),
+		"a getter of refusal": () => withGetter({ allowed: false }, "refusal", () => declined()),
+		"a rejected promise as allowed": () => ({ allowed: rejected() }),
+		"a rejected promise as a ruling's own then data": () => withData({ allowed: true }, "then", rejected()),
+		"a rejected promise as a ruling's non-enumerable then data": () => withData({ allowed: true }, "then", rejected(), false),
+		"a rejected promise hidden in a refusal member's non-enumerable data": () => ({ allowed: false, refusal: declined({ member: withData({ kept: 1 }, "hidden", { deep: [rejected()] }, false) }) }),
+		"a rejected promise beside a throwing getter in a refusal array": () => ({ allowed: false, refusal: declined({ list: withGetter([rejected(), 0], "1", throws) }) }),
+		"a ruling's non-enumerable allowed": () => withData({}, "allowed", true, false),
+		"a class instance": () => new Ruling(),
+		"an inherited allowed": () => Object.create({ allowed: true }),
+		"a symbol beside allowed": () => ({ allowed: true, [Symbol("extra")]: 1 }),
+		"an extra field beside allowed": () => ({ allowed: true, why: "because" }),
+		"a refusal beside allowed true": () => ({ allowed: true, refusal: declined() }),
+		"an extra field beside a refusal": () => ({ allowed: false, refusal: declined(), why: "because" }),
+		"no refusal": () => ({ allowed: false }),
+		"a refusal missing why": () => ({ allowed: false, refusal: (({ why, ...rest }) => rest)(declined()) }),
+		"a refusal with an empty code": () => ({ allowed: false, refusal: { ...declined(), code: "" } }),
+		"a refusal with an extra field": () => ({ allowed: false, refusal: { ...declined(), extra: 1 } }),
+		"a refusal whose details are a list": () => ({ allowed: false, refusal: { ...declined(), details: [] } }),
+		"a refusal with no misfits listed": () => ({ allowed: false, refusal: { ...declined(), misfits: [] } }),
+		"an Error as the refusal": () => ({ allowed: false, refusal: Object.assign(new Error("declined"), declined()) }),
+		"a refusal holding undefined": () => ({ allowed: false, refusal: declined({ missing: undefined }) }),
+		"a ruling holding itself": () => { const ruling = { allowed: false, refusal: declined() }; ruling.refusal.details.self = ruling; return ruling; },
+		"a list": () => [true],
+		"a string": () => "allowed",
+		"undefined": () => undefined,
+		"a Proxy whose traps throw": () => new Proxy({ allowed: true }, Object.fromEntries(["get", "getOwnPropertyDescriptor", "ownKeys", "getPrototypeOf", "has"].map((trap) => [trap, () => { ran.push(`${trap} trap`); throw new Error("a trap that throws"); }]))),
 	};
-	const withThen = (object, gives) => Object.defineProperty(object, "then", { get: thenGetter(gives), enumerable: true, configurable: true });
-	const refusal = () => policyRefusal("not-writer", { writer: "somebody" });
-	const RULINGS = {
-		"the ruling": (gives) => withThen({ allowed: false, refusal: refusal() }, gives),
-		"a refusal": (gives) => ({ allowed: false, refusal: withThen(refusal(), gives) }),
-		"a refusal member": (gives) => ({ allowed: false, refusal: policyRefusal("not-writer", { member: withThen({ kept: 1 }, gives) }) }),
-	};
-	// A refusal carrying a then member is not a refusal record, which has exactly EM9's six members, so it is
-	// another answer, ending the invocation operation-failed (EM13); null marks that ending.
-	const EXPECTED_REFUSAL = {
-		"the ruling": refusal(),
-		"a refusal": null,
-		"a refusal member": policyRefusal("not-writer", { member: { kept: 1, then: NOT_A_FUNCTION } }),
-	};
+	// Traps the reader runs without running any code of the application's own: listing keys and the prototype.
+	const READER_TRAPS = new Set(["ownKeys trap", "getPrototypeOf trap", "getOwnPropertyDescriptor trap"]);
 	let ruling = () => ({ allowed: true });
-	const { clients: { alice }, store } = await setup(t, { callers: ["alice"], policy: () => ruling() });
-	for (const [where, rule] of Object.entries(RULINGS)) {
-		for (const gives of ["a function", "a non-function"]) {
-			for (const call of [() => alice.create(note("alpha")), () => alice.read({ target: { id: "e1.1" } })]) {
-				reads = 0;
-				observed = [];
-				ruling = () => rule(gives);
-				const ending = await within(call());
-				const what = `${where}, then giving ${gives}, ${ending.operation}`;
-				assert.equal(reads, 1, `${what}: then read exactly once`);
-				if (gives === "a function" || EXPECTED_REFUSAL[where] === null) {
-					assert.deepEqual([ending.ending, ending.reason, ending.agpCode], ["unknown", "operation-failed", null], what);
-				} else {
-					assert.deepEqual([ending.ending, ending.refusal], ["refused", EXPECTED_REFUSAL[where]], what);
-				}
-				assert.deepEqual(observed, gives === "a function" ? [["function", "function"]] : [], `${what}: a function observed once, through the function read, with two handlers; anything else never called`);
-			}
+	const { clients: { alice }, store, log } = await setup(t, { callers: ["alice"], policy: () => ruling() });
+	for (const [what, rule] of Object.entries(FORMS)) {
+		for (const operation of ["create", "read"]) {
+			ran.length = 0;
+			log.length = 0;
+			ruling = rule;
+			const ending = await within(operation === "create" ? alice.create(note("alpha")) : alice.read({ target: { id: "e1.1" } }));
+			assert.deepEqual([ending.ending, ending.reason, ending.agpCode], ["unknown", "operation-failed", null], `${what}, ${operation}`);
+			assert.deepEqual(ran.filter((r) => !READER_TRAPS.has(r)), [], `${what}, ${operation}: no getter, function or get trap run`);
+			assert.ok(!log.includes("create") && !log.includes("read"), `${what}, ${operation}: the store neither written nor read`);
 		}
 	}
 	assert.equal(position(store), 0, "nothing was written");
 	await new Promise((resolve) => setTimeout(resolve, 50));
 	assert.deepEqual(escaped, [], "no rejection went unhandled");
+	ruling = () => ({ allowed: true });
+	assert.equal(answerOf(await within(alice.create(note("after")))).position, 1, "the host serves on");
 });
 
 test("describe, operation-call's own operation, is ruled on by no policy and names no writer", async (t) => {

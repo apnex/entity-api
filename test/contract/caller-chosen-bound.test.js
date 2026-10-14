@@ -12,15 +12,20 @@
 // getters spent from the bound, a slow signal, bound or input getter using the bound up before the first page,
 // as findPage ends for the same input, time passing in the first and a later page's preparation, and a final
 // page that cannot be accepted, each with wide margins.
-// Every single call's bound starts when it is called too (EM10 as revised): on the controlled clock, each
-// operation given a slow bound getter leaves the call layer only the time left, rounded down, or, the bound
-// spent, ends unknown with bound-passed, whole, under a new identity and a new attempt of it, nothing handed to
-// the call layer; on the default clock, findPage, a write and a read given a slow signal, bound or invocation
-// getter outlasting the bound end so, under the identity given or a new one, and one spending part of it leaves
-// the call layer at most the time left.
+// Every single call delegates directly to the call layer's caller (EM10, EM12; zorg's D55), whose bound starts
+// as it reads its clock, before it reads the call's options: on the controlled clock, each operation given a
+// slow bound getter hands the call layer the bound unchanged, and spending part of it the call answers, while
+// spending all of it the call layer ends it unknown with bound-passed, whole, under its own new identity and a
+// new attempt of it, nothing sent; on the default clock, findPage, a write and a read given a slow signal, bound
+// or invocation getter outlasting the bound end so, under the identity given or a new one, nothing sent, and one
+// spending part of it is answered, the call layer given the bound as the application gave it. Over a caller
+// that reads its request as operation-call's does, with a client clock that throws if read, each of the six
+// single calls reads no option before the caller's clock, each at most once, repeat for a write only, the
+// bound by default the client's, and returns the caller's ending unchanged.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createStoreClient } from "@apnex/entity-api";
+import { readCallRequest } from "@apnex/operation-call";
 import { openTopology, preparingIdentities, turn, until, within } from "../support/topology.js";
 import { answerOf, clientOf, nodeEvidence, openStore, serve } from "../support/serving.js";
 
@@ -91,11 +96,10 @@ test("a whole find's bound is one deadline for all its pages, from the moment it
 	assert.equal(ending.invocation, (await entry.endings[0]).invocation);
 });
 
-test("every single call's bound starts when it is called: a slow bound getter spending part of it leaves the call layer only the time left, rounded down, and spending all of it ends the call unknown at its bound with nothing sent", async (t) => {
+test("every single call hands the call layer its bound, which starts as the call layer reads its clock, before the bound getter runs: a slow bound getter spending part of it leaves the call time to answer, and spending all of it the call layer ends the call unknown at its bound with nothing sent", async (t) => {
 	const { topology, entry, arrived, setHold } = await withheld(t);
 	setHold(false);
-	const identities = { wallTimeMs: () => 1791540000123.9, randomHex: (n) => "c".repeat(n) };
-	const client = clientOf(topology, "alice", { bound: 300, identities });
+	const client = clientOf(topology, "alice", { bound: 300 });
 	const operations = [
 		["create", (o) => client.create({ kind: "any", name: "n", tags: [], body: 0 }, o)],
 		["update", (o) => client.update({ target: { id: "e1.1" }, body: 1 }, o)],
@@ -104,18 +108,71 @@ test("every single call's bound starts when it is called: a slow bound getter sp
 		["find", (o) => client.findPage({ kind: "any" }, o)],
 		["history-bound", (o) => client.historyBound(o)],
 	];
-	const slowBound = (ms, bound) => ({ get bound() { topology.hooks.moveCallClock(ms); return bound; } });
+	let reads = 0;
+	const slowBound = (ms, bound) => ({ get bound() { reads++; topology.hooks.moveCallClock(ms); return bound; } });
 	for (const [operation, call] of operations) {
-		await within(call(slowBound(100.6, 250)));
-		assert.deepEqual([entry.calls.at(-1).operation, entry.calls.at(-1).bound], [operation, 149], `${operation}: the 100.6 ms spent reading its bound taken from it`);
-		const calls = entry.calls.length;
+		reads = 0;
+		const sent = arrived();
+		const answered = await within(call(slowBound(100.6, 250)));
+		assert.deepEqual([entry.calls.at(-1).operation, entry.calls.at(-1).bound], [operation, 250], `${operation}: the bound handed on as given`);
+		assert.equal(answered, await entry.endings.at(-1), `${operation}: the call layer's ending, unchanged`);
+		assert.notEqual(answered.reason, "bound-passed", `${operation}: 149.4 ms left once the getter ran, so the call was sent`);
+		assert.equal(arrived(), sent + 1, `${operation}: sent`);
 		const ending = await within(call(slowBound(250, 250)));
-		const invocation = "1791540000123-cccccccccccccccc";
-		assert.deepEqual(ending, { ending: "unknown", invocation, attempt: `${invocation}.cccccccc`, operation, reason: "bound-passed", agpCode: null, deliveryReport: null }, `${operation}: its bound spent`);
+		assert.deepEqual({ ...ending, invocation: "", attempt: "" }, { ending: "unknown", invocation: "", attempt: "", operation, reason: "bound-passed", agpCode: null, deliveryReport: null }, `${operation}: its bound spent`);
+		assert.match(ending.invocation, /^[0-9]{13}-[0-9a-f]{16}$/, `${operation}: a new invocation identity`);
+		assert.ok(ending.attempt.startsWith(`${ending.invocation}.`), `${operation}: a new attempt of it`);
 		assert.ok(Object.isFrozen(ending));
-		assert.equal(entry.calls.length, calls, `${operation}: nothing handed to the call layer`);
+		assert.equal(ending, await entry.endings.at(-1), `${operation}: the call layer's own ending, unchanged`);
+		assert.equal(arrived(), sent + 1, `${operation}: nothing sent once its bound was spent`);
+		assert.equal(reads, 2, `${operation}: each bound getter read once`);
 	}
 	assert.equal(arrived(), operations.length, "only the calls left time were sent");
+});
+
+test("each single call delegates to its caller, keeping no clock: no option is read before the caller reads its clock, each is read at most once, repeat is read and forwarded for a write only, the bound defaults to the client's, and the caller's ending is returned unchanged", async () => {
+	const ID = "1791540000000-0123456789abcdef";
+	const log = [];
+	const returned = [];
+	const caller = {
+		async invoke(request) {
+			log.push("clock");
+			const read = readCallRequest(request);
+			log.push("read");
+			// Read again: the same value, and no option of the application's read a second time (the log shows it).
+			for (const name of ["bound", "invocation", "signal"]) assert.equal(request[name], read[name], `${name} read again gives the value first read`);
+			assert.equal(request.repeat === true, read.repeat, "repeat read again gives the value first read");
+			const ending = Object.freeze({ ending: "answered", invocation: read.invocation ?? ID, attempt: `${ID}.00000001`, operation: read.operation, answer: { bound: read.bound, repeat: read.repeat, keys: Object.keys(request) } });
+			returned.push(ending);
+			return ending;
+		},
+	};
+	const client = createStoreClient({ caller, host: "host-a", service: "store", bound: 777, clock: { now() { throw new Error("a single call reads no clock of entity-api's"); } } });
+	const signal = new AbortController().signal;
+	const options = () => ({
+		get bound() { log.push("bound"); return 1234; },
+		get invocation() { log.push("invocation"); return ID; },
+		get repeat() { log.push("repeat"); return true; },
+		get signal() { log.push("signal"); return signal; },
+	});
+	const calls = {
+		create: [(o) => client.create({ kind: "any", name: "n", tags: [], body: 0 }, o), true],
+		update: [(o) => client.update({ target: { id: "e1.1" }, body: 1 }, o), true],
+		delete: [(o) => client.delete({ target: { id: "e1.1" } }, o), true],
+		read: [(o) => client.read({ target: { id: "e1.1" } }, o), false],
+		find: [(o) => client.findPage({ kind: "any" }, o), false],
+		"history-bound": [(o) => client.historyBound(o), false],
+	};
+	for (const [operation, [call, write]] of Object.entries(calls)) {
+		log.length = 0;
+		const ending = await call(options());
+		assert.deepEqual(log, write ? ["clock", "bound", "invocation", "repeat", "signal", "read"] : ["clock", "bound", "invocation", "signal", "read"], `${operation}: every option read once, after the caller's clock`);
+		assert.equal(ending, returned.at(-1), `${operation}: the caller's ending, unchanged`);
+		assert.deepEqual([ending.operation, ending.answer.bound, ending.answer.repeat], [operation, 1234, write], operation);
+		assert.deepEqual(ending.answer.keys, ["host", "service", "operation", "input", "bound", "invocation", ...(write ? ["repeat"] : []), "signal"], `${operation}: repeat in a write's request only`);
+		for (const given of [undefined, {}]) assert.equal((await call(given)).answer.bound, 777, `${operation}: the client's bound by default`);
+		await assert.rejects(call("fast"), TypeError, `${operation}: options neither an object nor absent, thrown as the caller reads them`);
+	}
 });
 
 test("a bound outside 1 to 2147483647 milliseconds, or not whole, is a programming error, thrown with nothing sent", async (t) => {
@@ -129,8 +186,8 @@ test("a bound outside 1 to 2147483647 milliseconds, or not whole, is a programmi
 	assert.equal(store.historyBound().answer.position, 0);
 });
 
-test("an abort signal given that is not one - null, one without aborted, one whose aborted is not a boolean - is a programming error of findPage, a write, a read and the whole find, thrown with time left and after a slow signal getter has spent the whole bound, with nothing handed to the call layer; a genuine signal and none given are not", async (t) => {
-	const { topology, entry, store, setHold } = await withheld(t);
+test("an abort signal given that is not one - null, one without aborted, one whose aborted is not a boolean - is a programming error of findPage, a write, a read and the whole find, thrown with time left and after a slow signal getter has spent the whole bound, with nothing sent; a genuine signal and none given are not", async (t) => {
+	const { topology, entry, store, setHold, arrived } = await withheld(t);
 	setHold(false);
 	const client = clientOf(topology, "alice", { bound: 300 });
 	let written = 0;
@@ -146,21 +203,21 @@ test("an abort signal given that is not one - null, one without aborted, one who
 		for (const spend of [0, 300]) {
 			const when = spend === 0 ? "with time left" : "its getter spending the whole bound";
 			for (const [what, make] of Object.entries(malformed)) {
-				const before = entry.calls.length;
+				const before = arrived();
 				await assert.rejects(within(call(signalOf(make(), spend))), TypeError, `${name}, ${what}, ${when}`);
-				assert.equal(entry.calls.length, before, `${name}, ${what}, ${when}: nothing handed to the call layer`);
+				assert.equal(arrived(), before, `${name}, ${what}, ${when}: nothing sent`);
 			}
 			for (const [what, value] of [["a genuine signal", new AbortController().signal], ["none given", undefined]]) {
-				const before = entry.calls.length;
+				const before = arrived();
 				const ending = await within(call(signalOf(value, spend)));
 				if (spend === 0) {
-					assert.equal(entry.calls.length, before + 1, `${name}, ${what}, ${when}: handed to the call layer`);
+					assert.equal(arrived(), before + 1, `${name}, ${what}, ${when}: sent`);
 					assert.equal(entry.calls.at(-1).signal, value, `${name}, ${what}, ${when}: the signal handed on as given`);
 					if (name === "find") assert.equal(ending.ending, "answered", `${name}, ${what}, ${when}`);
 					else assert.equal(ending, await entry.endings.at(-1), `${name}, ${what}, ${when}: the call layer's ending, unchanged`);
 				} else {
 					assert.deepEqual([ending.ending, ending.reason], ["unknown", "bound-passed"], `${name}, ${what}, ${when}`);
-					assert.equal(entry.calls.length, before, `${name}, ${what}, ${when}: nothing handed to the call layer`);
+					assert.equal(arrived(), before, `${name}, ${what}, ${when}: nothing sent`);
 				}
 			}
 		}
@@ -210,17 +267,19 @@ test("on the default clock, a slow signal getter, a slow bound getter or a slow 
 	const page = await within(client.findPage(...preparations.input()));
 	assert.deepEqual([page.ending, page.reason, page.agpCode, page.deliveryReport], ["unknown", "bound-passed", null, null], "findPage ends at its bound for the same input");
 	assert.ok(page.attempt.startsWith(`${page.invocation}.`), "findPage's ending with a new attempt of its invocation, as the find's is null");
-	assert.equal(entry.calls.length, 0, "findPage handed nothing to the call layer");
+	assert.equal(entry.calls.length, 1, "findPage delegated to the call layer, which read the input after its clock");
+	assert.equal(page, await entry.endings[0], "and ended it as the call layer did");
 	assert.equal(pages(), 0, "nothing reached the store");
 });
 
-test("on the default clock, a slow signal, bound or invocation getter outlasting the bound of findPage, a write or a read ends the call unknown at its bound, nothing handed to the call layer, under the identity given or a new one with a new attempt identity of it; one spending part of it leaves the call layer at most the time left", async (t) => {
+test("on the default clock, a slow signal, bound or invocation getter outlasting the bound of findPage, a write or a read ends the call unknown at its bound, nothing sent, under the identity given or a new one with a new attempt identity of it, as the call layer ends it; one spending part of it is answered, the call layer given the bound as given", async (t) => {
 	const { topology, entry, pages } = await realClock(t);
 	const client = clientOf(topology, "alice", { bound: 1000, clock: topology.callClock });
 	const ID = "1791540000000-0123456789abcdef";
+	let made = 0;
 	const singles = [
 		["find", (o) => client.findPage({ kind: "any" }, o)],
-		["create", (o) => client.create({ kind: "any", name: "n", tags: [], body: 0 }, o)],
+		["create", (o) => client.create({ kind: "any", name: `n${++made}`, tags: [], body: 0 }, o)],
 		["read", (o) => client.read({ target: { kind: "any", name: "e1" } }, o)],
 	];
 	const slow = (ms, value) => { busy(ms); return value; };
@@ -240,17 +299,19 @@ test("on the default clock, a slow signal, bound or invocation getter outlasting
 			assert.match(ending.attempt, /^[0-9]{13}-[0-9a-f]{16}\.[0-9a-f]{8}$/, label);
 			assert.ok(ending.attempt.startsWith(`${ending.invocation}.`), `${label}: an attempt of that invocation`);
 			assert.ok(Object.isFrozen(ending), label);
+			assert.equal(ending, await entry.endings.at(-1), `${label}: the call layer's ending, unchanged`);
 		}
 	}
-	assert.equal(entry.calls.length, 0, "nothing handed to the call layer");
+	assert.equal(entry.calls.length, 9, "each call delegated to the call layer");
 	assert.equal(pages(), 0, "nothing reached the store");
 	for (const [operation, call] of singles) {
 		for (const [what, options] of Object.entries(getters)) {
 			const given = what === "invocation" ? entry.caller.newInvocation() : undefined;
-			await within(call(options(150, given, 60_000)));
+			const ending = await within(call(options(150, given, 60_000)));
 			const made = entry.calls.at(-1);
 			assert.equal(made.operation, operation);
-			assert.ok(made.bound <= 59_850, `${operation}, a slow ${what} getter: the call layer's bound, ${made.bound}, has the 150 ms spent taken from it`);
+			assert.equal(made.bound, 60_000, `${operation}, a slow ${what} getter: the call layer given the bound as given, its own clock spending the 150 ms from it`);
+			assert.equal(ending.ending, "answered", `${operation}, a slow ${what} getter`);
 		}
 	}
 });
