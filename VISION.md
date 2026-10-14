@@ -1,6 +1,6 @@
 # entity-api - Vision
 
-**Status: ratified by the director, 2026-10-09 (zorg's `docs/DECISIONS.md`, `D5`); enduring.**\
+**Status: ratified by the director, 2026-10-09 (zorg's `docs/DECISIONS.md`, `D5`), amended 2026-10-14 (`D55`); enduring.**\
 This document states why entity-api exists and what it will never be.\
 It carries no current state, no roadmap, and no schedule.
 
@@ -63,8 +63,7 @@ It is never the source of an entity.\
 Any view it keeps locally says how current it is, and the store remains the truth.
 
 **Not the call layer.**\
-It does not pair replies, time out calls, or carry parts.\
-It uses the layer beneath that does.
+It does not pair replies, time out single calls, or carry parts; it keeps one deadline across the pages of a whole find, its own aggregate operation, and leaves each single call's and each page's bound and ending to the layer beneath (`D55`).
 
 **Not an authority.**\
 It asks the application whether a caller may act; it never decides.\

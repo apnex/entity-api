@@ -34,10 +34,10 @@ The trait column names any trait a system takes on by using the capability.
 | Capability | Relation | Requires | What a consumer can depend on | Trait |
 |---|---|---|---|---|
 | `serve-store-by-name` | provides | `operation-call:serve-named-operations`, `operation-call:operation-descriptions`, `operation-call:declared-shape-validation`, `operation-call:call-refusal` | A host half serves one store's operations as named operations, under a name the application chooses. | none |
-| `local-like-client` | provides | `operation-call:honest-call-ending`, `operation-call:caller-chosen-bound`, `operation-call:invocation-identity`, `operation-call:request-correlation` | A client half offers the store's operations to application logic as if the store were local. | none |
+| `local-like-client` | provides | `operation-call:honest-call-ending`, `operation-call:caller-chosen-bound`, `operation-call:invocation-identity`, `operation-call:request-correlation`, `shape-check:plain-json-value` | A client half offers the store's operations to application logic as if the store were local. | none |
 | `follow-closes-with-call` | provides | `operation-call:answer-in-parts`, `operation-call:cancel-invocation` | A remote follow ends only when the call carrying it ends - a caller ends it by cancelling that call - and the watcher resumes from its own position. | none |
-| `host-named-writer` | provides | `operation-call:peer-identity-evidence` | On the host half, the writer recorded for each remote change is the one the application names from the caller's evidence; a writer the client claims is never recorded. | none |
-| `ask-application-policy` | provides | `operation-call:peer-identity-evidence` | Before each operation the host asks the application whether the caller may act; it never decides. | none |
+| `host-named-writer` | provides | `operation-call:peer-identity-evidence`, `shape-check:plain-json-value` | On the host half, the writer recorded for each remote change is the one the application names from the caller's evidence; a writer the client claims is never recorded. | none |
+| `ask-application-policy` | provides | `operation-call:peer-identity-evidence`, `operation-call:call-refusal`, `shape-check:plain-json-value` | Before each operation the host asks the application whether the caller may act; it never decides. | none |
 | `dated-local-view` | provides | none | The client half may keep a local view, which always states the position it reflects. | none |
 | `positioned-entity-write` | carries from entity-store | none | Each remote change takes one position in the store's order. | none |
 | `change-provenance` | carries from entity-store | none | Remote readers see when each change was made and the writer the host named. | none |
@@ -66,7 +66,7 @@ The host half only makes sense beside a store: the system running it contains th
 This repository, `apnex/entity-api`, private until its first working code is certified.\
 The package `@apnex/entity-api` exports `serveStore`, the host half, and `createStoreClient`, the client half, as `export-map.json` records.\
 `follow-closes-with-call`, `dated-local-view`, `changes-since-position` and `follow-narrowed-set` are deferred under zorg's `D15`.\
-It depends on `@apnex/entity-store`, `@apnex/operation-call` and `@agp/node` through `file:` links, takes AGP's and entity-store's types only, and imports no module particular to one runtime.
+It depends on `@apnex/entity-store`, `@apnex/operation-call`, `@apnex/shape-check` and `@agp/node` through `file:` links, takes AGP's and entity-store's types only, and imports no module particular to one runtime.
 
 ---
 
@@ -117,6 +117,7 @@ Its host half and client half are halves of one duty, not separate components.
 
 - `entity-store`: `declared-shape-validation`, `positioned-entity-write`, `change-provenance`, `expected-revision-write`, `repeat-recognition`, `identity-name-lookup`, `find-by-kind-tags`, `changes-since-position`, `follow-narrowed-set`, `stated-history-bound`, `store-refusal`
 - `operation-call`: `honest-call-ending`, `caller-chosen-bound`, `answer-in-parts`, `cancel-invocation`, `invocation-identity`, `request-correlation`, `operation-descriptions`, `declared-shape-validation`, `call-refusal`, `serve-named-operations`, `peer-identity-evidence`, `advertiser-instance-select`
+- `shape-check`: `plain-json-value`
 
 **Composed-by:** nothing yet.\
 Its first consumer is zorg.
