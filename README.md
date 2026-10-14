@@ -2,7 +2,7 @@
 
 Make an entity store reachable by name, so a remote caller can rely on exactly what a local one can.
 
-**Status: built for zorg's Delta 1, stage 5, awaiting its verification.**\
+**Status: built, and certified at zorg's Delta 1, stage 5, at `185c590`.**\
 Its contract tests run entity-store's shared contract suite against a store called directly and against the same store served by the host half and called through the client half, and test each of its own rows, over AGP's production in-process carrier with AGP's injected clock and a separate clock for each call's bound.
 
 - `VISION.md` - why it exists, and what it will never be.
