@@ -15,12 +15,16 @@
 // made the change, since the writer is part of the digest; a repeated rename whose old name another agent
 // has since taken returns the first answer, with the first writer; the evidence reaches the writer naming as a
 // deeply frozen JSON snapshot, which it cannot change for the policy or a later request; and describe,
-// operation-call's own, names no writer.
+// operation-call's own, names no writer; and a writer naming throwing a rejected promise, a plain object holding
+// one or an Error caused by one, rejecting at once or later, ending the invocation unknown with operation-failed
+// at position 0, its rejection consumed, in the test's process and in a child process with no rejection
+// handler, the host serving on (stage 5's fifth verification, F2).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { openTopology, within } from "../support/topology.js";
 import { answerOf, clientOf, note, openStore, serve } from "../support/serving.js";
 import { policyRefusal, writerOnlyPolicy } from "../support/policies.js";
+import { faultsInChild, faultsInProcess } from "../support/callback-fault-checks.js";
 
 async function setup(t, { nameWriter, policy, callers = ["alice", "bob"] } = {}) {
 	const topology = await openTopology({ callers });
@@ -207,4 +211,12 @@ test("describe, operation-call's own operation, names no writer", async (t) => {
 	const ending = await within(topology.caller("alice").caller.invoke({ host: "host-a", service: "store", operation: "describe", input: {}, bound: 5000 }));
 	assert.equal(answerOf(ending).service, "store");
 	assert.deepEqual([named.length, policyAsked.length], [0, 0]);
+});
+
+test("a writer naming that throws a rejected promise, a plain object holding one or an Error caused by one, rejecting at once or later, for a create and a delete, ends the invocation unknown with operation-failed at position 0, its rejection consumed, nothing written, and the host serving on, in the test's process (stage 5's fifth verification, F2)", async (t) => {
+	await faultsInProcess(t, "nameWriter");
+});
+
+test("the same thrown values, in a process with no rejection handler, end the invocation unknown with operation-failed, nothing written, and the host serving on (F2)", async (t) => {
+	await faultsInChild(t, "nameWriter");
 });

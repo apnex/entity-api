@@ -23,7 +23,10 @@
 // rejection unhandled, and the host serving on; a plain ruling, null-prototype ones and data named then
 // included, is taken, its refusal passed on as it was read; the input, the evidence and the target
 // given as deeply frozen JSON snapshots, which the policy cannot change; describe, operation-call's own,
-// ruled on by no policy and naming no writer; and a policy's denial winning over a reused identity.
+// ruled on by no policy and naming no writer; a policy's denial winning over a reused identity; and a policy
+// throwing a rejected promise, a plain object holding one or an Error caused by one, rejecting at once or later,
+// ending the invocation unknown with operation-failed at position 0, its rejection consumed, in the test's
+// process and in a child process with no rejection handler, the host serving on (stage 5's fifth verification, F2).
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -35,6 +38,7 @@ import { fileURLToPath } from "node:url";
 import { openTopology, within } from "../support/topology.js";
 import { answerOf, clientOf, note, openStore, serve } from "../support/serving.js";
 import { policyRefusal, recordingStore, writerOnlyPolicy } from "../support/policies.js";
+import { faultsInChild, faultsInProcess } from "../support/callback-fault-checks.js";
 
 async function setup(t, { policy, nameWriter, callers = ["alice", "bob"], log = [] } = {}) {
 	const topology = await openTopology({ callers });
@@ -451,4 +455,12 @@ test("a retained write identity with another digest is no recognised repeat: the
 	deny = false;
 	const allowed = await within(alice.update({ target: { id: "e1.1" }, name: "beta" }, { invocation: made.invocation }));
 	assert.deepEqual([allowed.refusal.part, allowed.refusal.code], ["entity-store", "identity-reused"], "allowed, the write meets the store's identity-reused");
+});
+
+test("a policy that throws a rejected promise, a plain object holding one or an Error caused by one, rejecting at once or later, for a create and a read, ends the invocation unknown with operation-failed at position 0, its rejection consumed, nothing written, and the host serving on, in the test's process (stage 5's fifth verification, F2)", async (t) => {
+	await faultsInProcess(t, "policy");
+});
+
+test("the same thrown values, in a process with no rejection handler, end the invocation unknown with operation-failed, nothing written, and the host serving on (F2)", async (t) => {
+	await faultsInChild(t, "policy");
 });

@@ -212,7 +212,7 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 	const begin = (input: JsonInput, call: CallOptions | undefined): Begun => {
 		const start = now();
 		const given = optionsOf(call);
-		const bound = checkBound(given.bound ?? options.bound);
+		const bound = checkBound(given.bound === undefined ? options.bound : given.bound);
 		if (given.invocation !== undefined && !isInvocationId(given.invocation)) throw new TypeError("a call's invocation must be an invocation identity as EM11 writes it");
 		const signal: unknown = given.signal;
 		if (signal !== undefined && (signal === null || typeof (signal as { aborted?: unknown }).aborted !== "boolean")) throw new TypeError("a call's signal must be an AbortSignal");
@@ -290,7 +290,11 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 		const getter = (name: "bound" | "invocation" | "signal" | "repeat", get: () => unknown): void => {
 			Object.defineProperty(request, name, { get, enumerable: true, configurable: false });
 		};
-		getter("bound", () => option("bound") ?? options.bound);
+		getter("bound", () => {
+			// Only an absent bound defaults to the client's; any bound given, null included, goes to the call layer's check (EM12).
+			const bound = option("bound");
+			return bound === undefined ? options.bound : bound;
+		});
 		getter("invocation", () => option("invocation"));
 		if (repeatable) getter("repeat", () => option("repeat"));
 		getter("signal", () => option("signal"));

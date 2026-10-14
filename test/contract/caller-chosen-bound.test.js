@@ -5,7 +5,8 @@
 // ends unknown exactly at the bound its caller gave - the call's own or the client's - and not a millisecond
 // before; the whole find's bound is one deadline for all its pages, from the moment it is called, however its
 // pages spend it; and a bound outside 1 to 2147483647 milliseconds, or not whole, is a programming error,
-// thrown with nothing sent, as is an abort signal given that is not one - null, one without aborted, one whose
+// thrown with nothing sent - an explicit null bound included, for all seven methods, with a client bound and
+// without, never replaced by the client's (stage 5's fifth verification, F3) - as is an abort signal given that is not one - null, one without aborted, one whose
 // aborted is not a boolean - for findPage, a write, a read and the whole find, with time left and after a slow
 // signal getter has spent the whole bound, a genuine signal and none given as controls. With operation-call's default clock, a whole find's clock is read as it is called,
 // before its input and options are read, and no page is answered after its deadline: time passing in their
@@ -184,6 +185,32 @@ test("a bound outside 1 to 2147483647 milliseconds, or not whole, is a programmi
 		await assert.rejects(client.find({ kind: "any" }, { bound }), RangeError, `find, ${bound}`);
 	}
 	assert.equal(store.historyBound().answer.position, 0);
+});
+
+test("an explicit null bound is a bound given, never replaced by the client's: each of the seven methods given { bound: null } throws a RangeError with nothing sent, whether the client has a bound of its own or none (stage 5's fifth verification, F3)", async (t) => {
+	const { topology, store, setHold, arrived } = await withheld(t);
+	setHold(false);
+	const clients = {
+		"a client bound of 100": createStoreClient({ caller: topology.caller("alice").caller, host: "host-a", service: "store", bound: 100, clock: topology.callClock }),
+		"no client bound": createStoreClient({ caller: topology.caller("alice").caller, host: "host-a", service: "store", clock: topology.callClock }),
+	};
+	for (const [which, client] of Object.entries(clients)) {
+		const calls = {
+			create: () => client.create({ kind: "any", name: "n", tags: [], body: 0 }, { bound: null }),
+			read: () => client.read({ target: { id: "e1.1" } }, { bound: null }),
+			update: () => client.update({ target: { id: "e1.1" }, body: 1 }, { bound: null }),
+			delete: () => client.delete({ target: { id: "e1.1" } }, { bound: null }),
+			find: () => client.find({ kind: "any" }, { bound: null }),
+			findPage: () => client.findPage({ kind: "any" }, { bound: null }),
+			historyBound: () => client.historyBound({ bound: null }),
+		};
+		for (const [method, call] of Object.entries(calls)) {
+			await assert.rejects(within(call()), RangeError, `${which}, ${method}`);
+		}
+	}
+	assert.equal(arrived(), 0, "no request reached the host");
+	assert.equal(store.historyBound().answer.position, 0, "nothing was written");
+	assert.equal(answerOf(await within(clients["a client bound of 100"].create({ kind: "any", name: "n", tags: [], body: 0 }))).position, 1, "with the bound absent, the client's is used, and the host serves");
 });
 
 test("an abort signal given that is not one - null, one without aborted, one whose aborted is not a boolean - is a programming error of findPage, a write, a read and the whole find, thrown with time left and after a slow signal getter has spent the whole bound, with nothing sent; a genuine signal and none given are not", async (t) => {

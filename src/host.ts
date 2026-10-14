@@ -132,7 +132,16 @@ function plain(value: unknown, what: string): JsonValue {
  * operation-call ends the invocation `failed` with `operation-failed` and nothing is written. Nothing is awaited.
  */
 function rule(policy: ApplicationPolicy, question: PolicyQuestion): PolicyRuling {
-	const ruling = plain(policy(question), "the application's policy's ruling");
+	let given: unknown;
+	try {
+		given = policy(question);
+	} catch (err) {
+		// What the policy throws is its defect: every native promise in it is given a handler that does nothing,
+		// without reading any of its code, before it is thrown on (principle 7; zorg's D54).
+		observePromises(err);
+		throw err;
+	}
+	const ruling = plain(given, "the application's policy's ruling");
 	if (ruling !== null && typeof ruling === "object" && !Array.isArray(ruling)) {
 		const fields = Object.keys(ruling);
 		const { allowed, refusal } = ruling as { readonly allowed?: JsonValue; readonly refusal?: JsonValue };
@@ -153,10 +162,55 @@ function rule(policy: ApplicationPolicy, question: PolicyQuestion): PolicyRuling
  * goes unhandled (zorg's D54, D55).
  */
 function nameFrom(nameWriter: WriterNaming, caller: CallerEvidence): string | null {
-	const writer: unknown = nameWriter(caller);
+	let writer: unknown;
+	try {
+		writer = nameWriter(caller);
+	} catch (err) {
+		// What the writer naming throws is observed as the policy's throw is, then thrown on (zorg's D54).
+		observePromises(err);
+		throw err;
+	}
 	if (writer === null || typeof writer === "string") return writer;
 	observePromises(writer);
 	throw new TypeError("the application's writer naming must give a string, or null when the evidence names no writer");
+}
+
+/**
+ * The application's evidence port as entity-api hands it to operation-call's host, which awaits its answer
+ * (EM13; zorg's D54, D55). The application's answer is read here, before anything awaits it: a native promise
+ * - the declared asynchronous completion - is followed through `Promise.prototype.then` itself, its value then
+ * read as plain data; any other answer is read as plain data at once, through shape-check's `readPlainJson`,
+ * so no `then` is probed, no getter runs and no non-native thenable is assimilated. What the host then awaits
+ * is a deeply frozen plain JSON value, which has no function `then`. Whatever the port throws, or its promise
+ * rejects with, has every native promise in it given a handler that does nothing before it is thrown on, so
+ * operation-call ends the invocation `failed` with `operation-failed` and no rejection goes unhandled.
+ */
+function plainEvidence(evidence: EvidenceFunction): EvidenceFunction {
+	return (delivery: DeliveryContext): unknown => {
+		let raw: unknown;
+		try {
+			raw = evidence(delivery);
+		} catch (err) {
+			observePromises(err);
+			throw err;
+		}
+		let native = false;
+		try {
+			native = raw instanceof Promise;
+		} catch {
+			native = false;
+		}
+		if (native) {
+			return Reflect.apply(Promise.prototype.then, raw, [
+				(resolved: unknown) => plain(resolved, "the caller's evidence"),
+				(err: unknown) => {
+					observePromises(err);
+					throw err;
+				},
+			]);
+		}
+		return plain(raw, "the caller's evidence");
+	};
 }
 
 /** A store's outcome as an operation's result: its answer or its refusal, unchanged. */
@@ -174,7 +228,7 @@ export async function serveStore(options: StoreServerOptions): Promise<StoreServ
 	if (typeof nameWriter !== "function") throw new TypeError("serveStore needs the application's writer naming, a function of the caller's evidence");
 	if (typeof policy !== "function") throw new TypeError("serveStore needs the application's policy, a function ruling on each operation");
 
-	const opening = await createOperationHost(node, evidence === undefined ? { service } : { service, evidence });
+	const opening = await createOperationHost(node, evidence === undefined ? { service } : { service, evidence: typeof evidence === "function" ? plainEvidence(evidence) : evidence });
 	if (!opening.opened) return { served: false, refusal: opening.refusal };
 	const host = opening.host;
 

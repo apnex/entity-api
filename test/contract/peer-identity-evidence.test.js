@@ -8,11 +8,18 @@
 // function that fails, and evidence that is not plain JSON data - read through shape-check's readPlainJson,
 // running none of its code (zorg's D54, D55): a getter, which is never run, a class instance, an inherited, a
 // non-enumerable or a symbol field, or a promise within, which is observed - end the invocation unknown with
-// operation-failed before the writer naming or the policy is asked, no rejection unhandled.
+// operation-failed before the writer naming or the policy is asked, no rejection unhandled. Evidence answered
+// synchronously is read as plain data before operation-call's host awaits it, and only a native promise is
+// followed (stage 5's fifth verification, F1): a top-level then getter, enumerable or not, giving undefined or a
+// rejecting promise, and a non-native thenable, are never run, and with a native promise rejecting or resolving
+// to evidence holding a rejecting promise, end the invocation unknown with operation-failed at position 0; an
+// evidence function throwing a rejected promise, or a value holding one, has it consumed (F2) - each in the
+// test's process and in a child process with no rejection handler, the host serving on.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { within } from "../support/topology.js";
 import { answerOf, note, served } from "../support/serving.js";
+import { faultsInChild, faultsInProcess } from "../support/callback-fault-checks.js";
 
 test("the policy and the writer naming receive the evidence function's answer, as one deeply frozen JSON snapshot of it, and AGP's delivery context as the evidence function was given it", async (t) => {
 	const given = [];
@@ -125,4 +132,44 @@ test("evidence that is not plain JSON data, or that cannot be read, ends the inv
 	assert.deepEqual(ran, [], "no getter of the evidence was run");
 	await new Promise((resolve) => setTimeout(resolve, 50));
 	assert.deepEqual(escaped, [], "no rejection went unhandled");
+});
+
+test("evidence answered synchronously is read as plain data before the host awaits it, and only a native promise is followed: a top-level then getter, giving undefined or a rejecting promise, enumerable or not, and a non-native thenable resolving to plain evidence, and a native promise rejecting or resolving to evidence holding a rejecting promise, rejecting at once or later, for a create and a read, end the invocation unknown with operation-failed at position 0, no getter or thenable run, nothing written, no rejection unhandled, and the host serving on (stage 5's fifth verification, F1)", async (t) => {
+	await faultsInProcess(t, "evidence returned");
+});
+
+test("the same evidence answers, in a process with no rejection handler, end the invocation unknown with operation-failed, no getter or thenable run, nothing written, and the host serving on (F1)", async (t) => {
+	await faultsInChild(t, "evidence returned");
+});
+
+test("an evidence function that throws a rejected promise, a plain object holding one or an Error caused by one, rejecting at once or later, ends the invocation unknown with operation-failed, its rejection consumed, nothing written, and the host serving on, in the test's process and in one with no rejection handler (F2)", async (t) => {
+	await faultsInProcess(t, "evidence");
+	await faultsInChild(t, "evidence");
+});
+
+test("a then getter on evidence answered synchronously is never run, and a non-native thenable is never assimilated, for a create and a read: no writer is named, no policy asked, and nothing written", async (t) => {
+	const ran = [];
+	const asked = [];
+	let answer = () => ({ node: "alice" });
+	const { clients: { alice }, store } = await served(t, {
+		callers: ["alice"],
+		evidence: () => answer(),
+		nameWriter: (caller) => { asked.push("writer"); return caller.evidence.node; },
+		policy: () => { asked.push("policy"); return { allowed: true }; },
+	});
+	const ANSWERS = [
+		() => ({ principal: "alice", get then() { ran.push("then getter"); return undefined; } }),
+		() => ({ then(resolve) { ran.push("thenable called"); resolve({ principal: "alice" }); } }),
+	];
+	for (const make of ANSWERS) {
+		answer = make;
+		for (const call of [() => alice.create(note("alpha")), () => alice.read({ target: { id: "e1.1" } })]) {
+			const ending = await within(call());
+			assert.deepEqual([ending.ending, ending.reason, ending.agpCode], ["unknown", "operation-failed", null]);
+		}
+	}
+	assert.deepEqual([ran, asked], [[], []], "no getter or thenable run, and neither callback asked");
+	assert.equal(store.historyBound().answer.position, 0);
+	answer = () => ({ node: "alice", then: "plain data named then" });
+	assert.equal(answerOf(await within(alice.create(note("alpha")))).position, 1, "plain evidence holding data named then is taken, and the host serves on");
 });
