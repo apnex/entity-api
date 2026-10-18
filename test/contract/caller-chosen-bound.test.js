@@ -110,6 +110,7 @@ test("every single call hands the call layer its bound, which starts as the call
 		["read", (o) => client.read({ target: { id: "e1.1" } }, o)],
 		["find", (o) => client.findPage({ kind: "any" }, o)],
 		["history-bound", (o) => client.historyBound(o)],
+		["changes", (o) => client.changesPage({ since: 0 }, o)],
 	];
 	let reads = 0;
 	const slowBound = (ms, bound) => ({ get bound() { reads++; topology.hooks.moveCallClock(ms); return bound; } });
@@ -165,6 +166,7 @@ test("each single call delegates to its caller, keeping no clock: no option is r
 		read: [(o) => client.read({ target: { id: "e1.1" } }, o), false],
 		find: [(o) => client.findPage({ kind: "any" }, o), false],
 		"history-bound": [(o) => client.historyBound(o), false],
+		changes: [(o) => client.changesPage({ since: 0 }, o), false],
 	};
 	for (const [operation, [call, write]] of Object.entries(calls)) {
 		log.length = 0;
