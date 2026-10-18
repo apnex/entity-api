@@ -17,7 +17,7 @@
  * 5. a refusal is returned unchanged; a recognised repeat returns the first answer; any other write goes to
  *    the store, whose answer or refusal is returned unchanged.
  *
- * A read, a find and `history-bound` are ruled on by the policy before the store answers them. entity-api
+ * A read, a find, `history-bound` and `changes` are ruled on by the policy before the store answers them. entity-api
  * decides nothing itself: it never refuses for its own reasons, and owns no refusal code. The caller's
  * evidence, the writer's name and the policy's ruling and refusal are read as plain data through shape-check's
  * `plain-json-value` and operation-call's `readRefusalRecord`, running none of their code (zorg's D54, D55).
@@ -226,7 +226,7 @@ function result(outcome: StoreOutcome<unknown>): OperationResult {
 export async function serveStore(options: StoreServerOptions): Promise<StoreServing> {
 	if (options === null || typeof options !== "object") throw new TypeError("serveStore needs { node, service, store, nameWriter, policy }");
 	const { node, service, store, nameWriter, policy, evidence } = options;
-	for (const method of ["create", "update", "delete", "read", "find", "historyBound", "checkRepeat"] as const) {
+	for (const method of ["create", "update", "delete", "read", "find", "historyBound", "changes", "checkRepeat"] as const) {
 		if (!store || typeof store[method] !== "function") throw new TypeError(`serveStore needs an open entity store, offering ${method}`);
 	}
 	if (typeof nameWriter !== "function") throw new TypeError("serveStore needs the application's writer naming, a function of the caller's evidence");
@@ -260,7 +260,7 @@ export async function serveStore(options: StoreServerOptions): Promise<StoreServ
 		}
 	};
 
-	/** A read, a find or history-bound: the policy rules, then the store answers. */
+	/** A read, a find, history-bound or changes: the policy rules, then the store answers (EM13, EM16). */
 	const answer = (operation: Exclude<StoreOperation, WriteOperation>, input: JsonValue, context: OperationContext, evidence: JsonValue): OperationResult => {
 		const ruling = rule(policy, Object.freeze({ operation, input: plain(input, "an operation's input"), evidence, delivery: context.delivery, writer: null, target: null, repeat: false }));
 		if (!ruling.allowed) return { outcome: "refused", refusal: ruling.refusal };
@@ -268,6 +268,7 @@ export async function serveStore(options: StoreServerOptions): Promise<StoreServ
 			case "read": return result(store.read(input as never));
 			case "find": return result(store.find(input as never));
 			case "history-bound": return result(store.historyBound());
+			case "changes": return result(store.changes(input as never));
 		}
 	};
 

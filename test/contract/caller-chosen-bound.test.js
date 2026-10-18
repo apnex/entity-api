@@ -5,9 +5,9 @@
 // ends unknown exactly at the bound its caller gave - the call's own or the client's - and not a millisecond
 // before; the whole find's bound is one deadline for all its pages, from the moment it is called, however its
 // pages spend it; and a bound outside 1 to 2147483647 milliseconds, or not whole, is a programming error,
-// thrown with nothing sent - an explicit null bound included, for all seven methods, with a client bound and
+// thrown with nothing sent - an explicit null bound included, for all nine methods, with a client bound and
 // without, never replaced by the client's (stage 5's fifth verification, F3) - as is an abort signal given that is not one - null, one without aborted, one whose
-// aborted is not a boolean - for findPage, a write, a read and the whole find, with time left and after a slow
+// aborted is not a boolean - for findPage, a write, a read, the whole find, changesPage and the whole changes, with time left and after a slow
 // signal getter has spent the whole bound, a genuine signal and none given as controls. With operation-call's default clock, a whole find's clock is read as it is called,
 // before its input and options are read, and no page is answered after its deadline: time passing in their
 // getters spent from the bound, a slow signal, bound or input getter using the bound up before the first page,
@@ -57,6 +57,8 @@ test("each operation ends unknown exactly at the bound its caller gave, the call
 		[() => client.findPage({ kind: "any" }), 300],
 		[() => client.find({ kind: "any" }, { bound: 120 }), 120],
 		[() => client.historyBound({ bound: 2 }), 2],
+		[() => client.changesPage({ since: 0 }, { bound: 333 }), 333],
+		[() => client.changes({ since: 0 }, { bound: 130 }), 130],
 	];
 	for (const [i, [call, bound]] of calls.entries()) {
 		let ending;
@@ -79,7 +81,7 @@ test("a whole find's bound is one deadline for all its pages, from the moment it
 	for (let i = 1; i <= 5; i++) opened.store.create({ kind: "any", name: `e${i}`, tags: [], body: { pad: "x".repeat(200_000) } }, { writer: "w", writeId: `${i}` });
 	let pages = 0;
 	let requests = 0;
-	const store = { checkRepeat: (...a) => opened.store.checkRepeat(...a), read: (...a) => opened.store.read(...a), historyBound: () => opened.store.historyBound(), create: (...a) => opened.store.create(...a), update: (...a) => opened.store.update(...a), delete: (...a) => opened.store.delete(...a),
+	const store = { checkRepeat: (...a) => opened.store.checkRepeat(...a), read: (...a) => opened.store.read(...a), historyBound: () => opened.store.historyBound(), changes: (...a) => opened.store.changes(...a), create: (...a) => opened.store.create(...a), update: (...a) => opened.store.update(...a), delete: (...a) => opened.store.delete(...a),
 		find(input) {
 			const page = opened.store.find(input);
 			// The first page's answer leaves 600 ms; the second's 249.5.
@@ -187,7 +189,7 @@ test("a bound outside 1 to 2147483647 milliseconds, or not whole, is a programmi
 	assert.equal(store.historyBound().answer.position, 0);
 });
 
-test("an explicit null bound is a bound given, never replaced by the client's: each of the seven methods given { bound: null } throws a RangeError with nothing sent, whether the client has a bound of its own or none (stage 5's fifth verification, F3)", async (t) => {
+test("an explicit null bound is a bound given, never replaced by the client's: each of the nine methods given { bound: null } throws a RangeError with nothing sent, whether the client has a bound of its own or none (stage 5's fifth verification, F3)", async (t) => {
 	const { topology, store, setHold, arrived } = await withheld(t);
 	setHold(false);
 	const clients = {
@@ -203,6 +205,8 @@ test("an explicit null bound is a bound given, never replaced by the client's: e
 			find: () => client.find({ kind: "any" }, { bound: null }),
 			findPage: () => client.findPage({ kind: "any" }, { bound: null }),
 			historyBound: () => client.historyBound({ bound: null }),
+			changesPage: () => client.changesPage({ since: 0 }, { bound: null }),
+			changes: () => client.changes({ since: 0 }, { bound: null }),
 		};
 		for (const [method, call] of Object.entries(calls)) {
 			await assert.rejects(within(call()), RangeError, `${which}, ${method}`);
@@ -213,7 +217,7 @@ test("an explicit null bound is a bound given, never replaced by the client's: e
 	assert.equal(answerOf(await within(clients["a client bound of 100"].create({ kind: "any", name: "n", tags: [], body: 0 }))).position, 1, "with the bound absent, the client's is used, and the host serves");
 });
 
-test("an abort signal given that is not one - null, one without aborted, one whose aborted is not a boolean - is a programming error of findPage, a write, a read and the whole find, thrown with time left and after a slow signal getter has spent the whole bound, with nothing sent; a genuine signal and none given are not", async (t) => {
+test("an abort signal given that is not one - null, one without aborted, one whose aborted is not a boolean - is a programming error of findPage, a write, a read, the whole find, changesPage and the whole changes, thrown with time left and after a slow signal getter has spent the whole bound, with nothing sent; a genuine signal and none given are not", async (t) => {
 	const { topology, entry, store, setHold, arrived } = await withheld(t);
 	setHold(false);
 	const client = clientOf(topology, "alice", { bound: 300 });
@@ -223,6 +227,8 @@ test("an abort signal given that is not one - null, one without aborted, one who
 		write: (o) => client.create({ kind: "any", name: `n${++written}`, tags: [], body: 0 }, o),
 		read: (o) => client.read({ target: { id: "e1.1" } }, o),
 		find: (o) => client.find({ kind: "any" }, o),
+		changesPage: (o) => client.changesPage({ since: 0 }, o),
+		changes: (o) => client.changes({ since: 0 }, o),
 	};
 	const malformed = { "a null signal": () => null, "a signal without aborted": () => ({}), "a signal whose aborted is not a boolean": () => ({ aborted: "no" }) };
 	const signalOf = (value, spend) => ({ get signal() { if (spend) topology.hooks.moveCallClock(spend); return value; } });
@@ -240,7 +246,7 @@ test("an abort signal given that is not one - null, one without aborted, one who
 				if (spend === 0) {
 					assert.equal(arrived(), before + 1, `${name}, ${what}, ${when}: sent`);
 					assert.equal(entry.calls.at(-1).signal, value, `${name}, ${what}, ${when}: the signal handed on as given`);
-					if (name === "find") assert.equal(ending.ending, "answered", `${name}, ${what}, ${when}`);
+					if (name === "find" || name === "changes") assert.equal(ending.ending, "answered", `${name}, ${what}, ${when}`);
 					else assert.equal(ending, await entry.endings.at(-1), `${name}, ${what}, ${when}: the call layer's ending, unchanged`);
 				} else {
 					assert.deepEqual([ending.ending, ending.reason], ["unknown", "bound-passed"], `${name}, ${what}, ${when}`);
@@ -262,7 +268,7 @@ async function realClock(t, { identities, find } = {}) {
 	const opened = openStore({ maxEntityBytes: 262_144 });
 	for (let i = 1; i <= 3; i++) opened.store.create({ kind: "any", name: `e${i}`, tags: [], body: { pad: "x".repeat(200_000) } }, { writer: "w", writeId: `${i}` });
 	let pages = 0;
-	const store = { ...Object.fromEntries(["create", "update", "delete", "read", "historyBound", "checkRepeat"].map((m) => [m, (...a) => opened.store[m](...a)])),
+	const store = { ...Object.fromEntries(["create", "update", "delete", "read", "historyBound", "changes", "checkRepeat"].map((m) => [m, (...a) => opened.store[m](...a)])),
 		find(input) { const n = ++pages; const page = opened.store.find(input); find?.(n); return page; } };
 	await serve(topology, { store });
 	return { topology, entry: topology.caller("alice"), pages: () => pages };

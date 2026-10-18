@@ -4,7 +4,7 @@
  * operation-call's own caller, or operation-proxy's client half, which offers the same interface - pinned to
  * the host the application names.
  *
- * Each single call - `create`, `read`, `update`, `delete`, `findPage` and `historyBound` - delegates directly to
+ * Each single call - `create`, `read`, `update`, `delete`, `findPage`, `changesPage` and `historyBound` - delegates directly to
  * the call layer's caller (EM10, EM12; zorg's D55): it reads nothing and keeps no clock of its own, but hands
  * the caller one request whose option getters read the application's options, each at most once, only when
  * the caller reads them - which operation-call's caller does after reading its clock - the bound defaulting to
@@ -18,7 +18,9 @@
  * `find` is the whole find of EM10, the client's own aggregate operation: it reads its clock as it is called,
  * then its input and options once, the input through shape-check's `snapshotJson`, and answers every match,
  * `{position, entries}`, read page by page as of the first page's position within one deadline; `findPage` is
- * one page, exactly as the store answers it. Nothing here
+ * one page, exactly as the store answers it. `changes` is the whole `changes` of EM16, run as the whole find
+ * is, each later page asked since the previous page's `next`, and answering every item, `{position, changes}`,
+ * with the last page's position; `changesPage` is one page, exactly as the store answers it. Nothing here
  * is particular to one runtime (zorg's D31): time and randomness come from the ports it is given, by default
  * operation-call's.
  */
@@ -95,10 +97,17 @@ export interface WriteOptions extends CallOptions {
 type FindEndingOf<E> = E extends unknown ? Omit<E, "attempt"> & { readonly attempt: string | null } : never;
 
 /**
- * How a whole find ends (EM10): as its last page ended, through whatever caller the client was given - so every
- * ending the caller interface admits, a caller across a hop's included (EM12) - under its first page's identity.
+ * How a whole find or a whole `changes` ends (EM10, EM16): as its last page ended, through whatever caller the
+ * client was given - so every ending the caller interface admits, a caller across a hop's included (EM12) -
+ * under its first page's identity.
  */
-export type FindEnding = FindEndingOf<CallEnding>;
+export type WholeEnding = FindEndingOf<CallEnding>;
+
+/** How a whole find ends (EM10). */
+export type FindEnding = WholeEnding;
+
+/** How a whole `changes` ends (EM16). */
+export type ChangesEnding = WholeEnding;
 
 /** The store's operations, as if the store were local. */
 export interface StoreClient {
@@ -113,6 +122,10 @@ export interface StoreClient {
 	/** The whole find: every match, answered `{position, entries}`, within one deadline (EM10). */
 	find(input: JsonInput, options?: CallOptions): Promise<FindEnding>;
 	historyBound(options?: CallOptions): Promise<CallEnding>;
+	/** One page of changes, answered `{position, changes, next}` exactly as the store answers it (EM16). */
+	changesPage(input: JsonInput, options?: CallOptions): Promise<CallEnding>;
+	/** The whole `changes`: every change since a position, answered `{position, changes}`, within one deadline (EM16). */
+	changes(input: JsonInput, options?: CallOptions): Promise<ChangesEnding>;
 }
 
 /** Throws unless a bound is a whole number of milliseconds from 1 to 2147483647 (EM12). */
@@ -158,25 +171,78 @@ interface Begun {
 /** One option as a single call's request read it: its value, or what reading it threw. */
 type OptionRead = { readonly threw: false; readonly value: unknown } | { readonly threw: true; readonly error: unknown };
 
-/** A page's answer as EM10 gives it, its fields read once, or undefined when the answer is not a page. */
-interface PageForm { readonly position: number; readonly entries: readonly JsonValue[]; readonly next: string | null }
+/** A page's answer as a whole paged operation reads it, its fields read once: its position, its items and its `next`. */
+interface PageForm<Next> { readonly position: number; readonly items: readonly JsonValue[]; readonly next: Next | null }
+
+/** True for a whole number: a safe integer from 0. */
+const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
+/** Each element of an array, read once, by index. */
+function itemsOf(list: readonly unknown[]): JsonValue[] {
+	const held: JsonValue[] = [];
+	const length = list.length;
+	for (let i = 0; i < length; i++) held.push(list[i] as JsonValue);
+	return held;
+}
 
 /**
- * Recognises a page (EM10): an object holding a `position` that is a whole number, an `entries` array and a
- * `next` that is a name or null. Each field, and each entry, is read once, so nothing of the answer is read
- * after the find has read its clock.
+ * Recognises a page of a find (EM10): an object holding a `position` that is a whole number, an `entries` array
+ * and a `next` that is a name or null. Each field, and each entry, is read once, so nothing of the answer is
+ * read after the find has read its clock.
  */
-function pageOf(answer: unknown): PageForm | undefined {
+function findPageOf(answer: unknown): PageForm<string> | undefined {
 	if (answer === null || typeof answer !== "object" || Array.isArray(answer)) return undefined;
 	const { position, entries, next } = answer as { position?: unknown; entries?: unknown; next?: unknown };
-	if (typeof position !== "number" || !Number.isSafeInteger(position) || position < 0) return undefined;
+	if (!isWhole(position)) return undefined;
 	if (!Array.isArray(entries)) return undefined;
 	if (next !== null && (typeof next !== "string" || !NAME_PATTERN.test(next))) return undefined;
-	const held: JsonValue[] = [];
-	const length = entries.length;
-	for (let i = 0; i < length; i++) held.push(entries[i] as JsonValue);
-	return { position, entries: held, next };
+	return { position, items: itemsOf(entries), next };
 }
+
+/**
+ * Recognises a page of changes (EM16): an object holding a `position` that is a whole number, a `changes`
+ * array, and a `next` that is null or a whole number above the `since` the page was asked with and not above
+ * the page's `position`, so every page a whole `changes` takes moves it forward. Each field, and each item, is
+ * read once; the `since` is read from the input the client itself sent, plain data it holds.
+ */
+function changesPageOf(answer: unknown, asked: JsonValue): PageForm<number> | undefined {
+	if (answer === null || typeof answer !== "object" || Array.isArray(answer)) return undefined;
+	const { position, changes, next } = answer as { position?: unknown; changes?: unknown; next?: unknown };
+	if (!isWhole(position)) return undefined;
+	if (!Array.isArray(changes)) return undefined;
+	if (next !== null) {
+		const since = asked !== null && typeof asked === "object" && !Array.isArray(asked) ? (asked as { readonly since?: JsonValue }).since : undefined;
+		if (!isWhole(next) || typeof since !== "number" || next <= since || next > position) return undefined;
+	}
+	return { position, items: itemsOf(changes), next };
+}
+
+/** What makes a whole paged operation of the client's - the whole find or the whole `changes` - its own. */
+interface Paging<Next> {
+	readonly operation: "find" | "changes";
+	/** The page an answer is, or undefined when it is not one; `asked` is the input the page was asked with. */
+	read(answer: unknown, asked: JsonValue): PageForm<Next> | undefined;
+	/** The input of the page after `last`, the first page being `first`. */
+	following(query: JsonValue, first: PageForm<Next>, last: PageForm<Next> & { readonly next: Next }): JsonInput;
+	/** The answer once a page answers with `next` null: every page's items, in order. */
+	finish(first: PageForm<Next>, last: PageForm<Next>, items: readonly JsonValue[]): JsonValue;
+}
+
+/** The whole find (EM10): each later page as of the first page's position and after the last page's `next`, answered with the first page's position. */
+const FIND: Paging<string> = {
+	operation: "find",
+	read: (answer) => findPageOf(answer),
+	following: (query, first, last) => ({ ...(query as { [name: string]: JsonValue }), asOf: first.position, after: last.next }),
+	finish: (first, _last, items) => Object.freeze({ position: first.position, entries: Object.freeze(items) as unknown as JsonValue[] }),
+};
+
+/** The whole `changes` (EM16): each later page since the last page's `next`, answered with the last page's position. */
+const CHANGES: Paging<number> = {
+	operation: "changes",
+	read: (answer, asked) => changesPageOf(answer, asked),
+	following: (query, _first, last) => ({ ...(query as { [name: string]: JsonValue }), since: last.next }),
+	finish: (_first, last, items) => Object.freeze({ position: last.position, changes: Object.freeze(items) as unknown as JsonValue[] }),
+};
 
 /** Builds a client of the store served under `service` on the host `host`. */
 export function createStoreClient(options: StoreClientOptions): StoreClient {
@@ -302,32 +368,34 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 	};
 
 	/**
-	 * The whole find of EM10: its clock is read as it is called, before anything else, as every caller reads its
-	 * own (EM12); then its input and options are read once, into a snapshot, and its one deadline is that first
-	 * reading plus the bound, so the time the snapshot takes is spent from the bound. Each page is invoked with the time left, read immediately before that page is
-	 * invoked and rounded down to a whole millisecond, as its bound, so no getter of the caller's runs between
-	 * that reading and the invocation; no page is sent with less than 1 millisecond left - the first included,
-	 * when preparing the find used the bound up, the find then ending with attempt null, as no page was sent -
-	 * and no answered page is taken once the deadline has passed - shown by a reading taken as its answer is
-	 * accepted; a reading that throws then cannot show it, so the answer observed decides, while one that throws
-	 * before a page is sent is thrown. A page ending other than answered ends the find as that page ended, whenever
-	 * it is observed (step 5). The first page goes under the identity given, or a new
-	 * one, each later page under a new identity, as of the first page's position and after the last page's
-	 * `next`. A page whose answer is not a page ends the find answered with that answer unchanged. Every ending
-	 * is the caller's, unchanged but for the first page's invocation and attempt.
+	 * A whole paged operation - the whole find of EM10, or the whole `changes` of EM16, which runs as it does: its
+	 * clock is read as it is called, before anything else, as every caller reads its own (EM12); then its input
+	 * and options are read once, into a snapshot, and its one deadline is that first reading plus the bound, so the
+	 * time the snapshot takes is spent from the bound. Each page is invoked with the time left, read immediately
+	 * before that page is invoked and rounded down to a whole millisecond, as its bound, so no getter of the
+	 * caller's runs between that reading and the invocation; no page is sent with less than 1 millisecond left -
+	 * the first included, when preparing used the bound up, the operation then ending with attempt null, as no
+	 * page was sent - and no answered page is taken once the deadline has passed - shown by a reading taken as its
+	 * answer is accepted; a reading that throws then cannot show it, so the answer observed decides, while one
+	 * that throws before a page is sent is thrown. A page ending other than answered ends the operation as that
+	 * page ended, whenever it is observed (step 5). The first page goes under the identity given, or a new one,
+	 * each later page under a new identity, its input as the operation's `following` makes it; none is marked a
+	 * repeat, and the signal given reaches each. A page whose answer is not a page ends the operation answered
+	 * with that answer unchanged. Every ending is the caller's, unchanged but for the first page's invocation and
+	 * attempt.
 	 */
-	const find = async (input: JsonInput, call?: CallOptions): Promise<FindEnding> => {
+	const whole = async <Next>(paging: Paging<Next>, input: JsonInput, call?: CallOptions): Promise<WholeEnding> => {
 		const { deadline, input: query, invocation, signal } = begin(input, call);
 		let first: { readonly invocation: string; readonly attempt: string | null } | undefined;
-		let position: number | undefined;
-		const entries: JsonValue[] = [];
+		let firstPage: PageForm<Next> | undefined;
+		const items: JsonValue[] = [];
 		let page = query as JsonInput;
-		const passed = (): FindEnding => boundPassed("find", first?.invocation ?? invocation ?? newInvocation(), first?.attempt ?? null);
+		const passed = (): WholeEnding => boundPassed(paging.operation, first?.invocation ?? invocation ?? newInvocation(), first?.attempt ?? null);
 		for (;;) {
 			const left = timeLeft(deadline);
 			if (left < 1) return passed();
 			const request = {
-				host, service, operation: "find", input: page, bound: Math.floor(left),
+				host, service, operation: paging.operation, input: page, bound: Math.floor(left),
 				...(first === undefined && invocation !== undefined ? { invocation } : {}),
 				...(signal === undefined ? {} : { signal }),
 			};
@@ -335,19 +403,19 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 			const ending = { ...(await callerInvoke.call(caller, request)) } as CallEnding;
 			const address = first ??= { invocation: ending.invocation, attempt: ending.attempt };
 			if (ending.ending !== "answered") return Object.freeze({ ...ending, invocation: address.invocation, attempt: address.attempt });
-			const form = pageOf(ending.answer);
+			const form = paging.read(ending.answer, page as JsonValue);
 			// An answer taken once the deadline has passed loses to it, as EM12 has a call's bound win.
 			if (shownLate(deadline)) return passed();
 			if (form === undefined) return Object.freeze({ ...ending, invocation: address.invocation, attempt: address.attempt });
-			position ??= form.position;
-			for (const entry of form.entries) entries.push(entry);
+			firstPage ??= form;
+			for (const item of form.items) items.push(item);
 			if (form.next === null) {
 				return Object.freeze({
-					ending: "answered", invocation: address.invocation, attempt: address.attempt, operation: "find",
-					answer: Object.freeze({ position, entries: Object.freeze(entries) as unknown as JsonValue[] }),
+					ending: "answered", invocation: address.invocation, attempt: address.attempt, operation: paging.operation,
+					answer: paging.finish(firstPage, form, items),
 				});
 			}
-			page = { ...(query as { [name: string]: JsonValue }), asOf: position, after: form.next };
+			page = paging.following(query, firstPage, form as PageForm<Next> & { readonly next: Next });
 		}
 	};
 
@@ -359,7 +427,9 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 		delete: (input: JsonInput, o?: WriteOptions) => single("delete", input, o, true),
 		read: (input: JsonInput, o?: CallOptions) => single("read", input, o, false),
 		findPage: (input: JsonInput, o?: CallOptions) => single("find", input, o, false),
-		find,
+		find: (input: JsonInput, o?: CallOptions) => whole(FIND, input, o),
 		historyBound: (o?: CallOptions) => single("history-bound", {}, o, false),
+		changesPage: (input: JsonInput, o?: CallOptions) => single("changes", input, o, false),
+		changes: (input: JsonInput, o?: CallOptions) => whole(CHANGES, input, o),
 	});
 }

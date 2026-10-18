@@ -14,7 +14,7 @@
 // JSON, cycles, aliases and getters in a whole find's input; the abort signal reaching every page; and a page
 // whose answer is not a page, first or later, ending the find answered with that answer unchanged under the
 // first page's invocation and attempt.
-// The single calls, findPage, a write and a read, delegate directly to the call layer's caller (EM10, EM12;
+// The single calls, findPage, changesPage (zorg's target, EM16), a write and a read, delegate directly to the call layer's caller (EM10, EM12;
 // zorg's D55), which reads its clock and then each option once: a slow signal, bound, invocation or input getter
 // spending all the bound ends the call unknown with bound-passed, as the call layer ends it, whole and frozen,
 // nothing sent, under the identity given or a new one and a new attempt identity of it; leaving any time at all,
@@ -57,7 +57,7 @@ async function setup(t, { count = 5, historyMs = 60_000, policy, evidence: given
 	let arrived = 0;
 	const evidence = (delivery) => { arrived++; return given(delivery); };
 	const store = {
-		...Object.fromEntries(["create", "update", "delete", "read", "historyBound", "checkRepeat"].map((m) => [m, (...a) => opened.store[m](...a)])),
+		...Object.fromEntries(["create", "update", "delete", "read", "historyBound", "changes", "checkRepeat"].map((m) => [m, (...a) => opened.store[m](...a)])),
 		find(input) {
 			const n = ++pages;
 			before[n]?.(input);
@@ -333,9 +333,10 @@ function countingIdentities() {
 	return { source: { wallTimeMs: () => 1791540000123.9, randomHex: (n) => hex(++k, n) }, ahead: (i, n) => hex(k + i, n) };
 }
 
-/** The single calls driven here - findPage, a write and a read - each with the operation it invokes and a fresh input. */
+/** The single calls driven here - findPage, changesPage (zorg's target, EM16), a write and a read - each with the operation it invokes and a fresh input. */
 const SINGLES = {
 	findPage: { operation: "find", call: (c, input, o) => c.findPage(input, o), input: () => ({ kind: "any", tags: ["t:x"] }) },
+	changesPage: { operation: "changes", call: (c, input, o) => c.changesPage(input, o), input: () => ({ since: 0 }) },
 	create: { operation: "create", call: (c, input, o) => c.create(input, o), input: (n) => ({ kind: "any", name: `made-${n}`, tags: [], body: n }) },
 	read: { operation: "read", call: (c, input, o) => c.read(input, o), input: () => ({ target: { kind: "any", name: "e1" } }) },
 };
@@ -364,7 +365,7 @@ const slowGetters = (move, reads = { n: 0 }) => {
 /** The ending a call whose bound passed with nothing sent is given, whole, as the call layer's caller gives it. */
 const passed = (operation, invocation, attempt) => ({ ending: "unknown", invocation, attempt, operation, reason: "bound-passed", agpCode: null, deliveryReport: null });
 
-test("findPage, a write and a read each delegate to the call layer, which reads its clock before their options and input: a slow signal, bound, invocation or input getter spending the bound ends the call unknown at its bound as the call layer ends it, nothing sent, under the identity given or a new one, with a new attempt identity of it; leaving less than 1 ms, the call layer sends it", async (t) => {
+test("findPage, changesPage, a write and a read each delegate to the call layer, which reads its clock before their options and input: a slow signal, bound, invocation or input getter spending the bound ends the call unknown at its bound as the call layer ends it, nothing sent, under the identity given or a new one, with a new attempt identity of it; leaving less than 1 ms, the call layer sends it", async (t) => {
 	const ids = countingIdentities();
 	const { topology, entry, store, pagesServed, arrived } = await setup(t, { count: 3, identities: ids.source });
 	const client = clientOf(topology, "alice", { bound: 10 });
@@ -406,7 +407,7 @@ test("findPage, a write and a read each delegate to the call layer, which reads 
 	assert.equal(store.historyBound().answer.position, 3 + written, "only the writes left time were written");
 });
 
-test("findPage, a write and a read each leave to the call layer the time a slow signal, bound, invocation or input getter takes: the call layer is given the bound as the application gave it, each getter read once, and its ending is returned unchanged", async (t) => {
+test("findPage, changesPage, a write and a read each leave to the call layer the time a slow signal, bound, invocation or input getter takes: the call layer is given the bound as the application gave it, each getter read once, and its ending is returned unchanged", async (t) => {
 	const { topology, entry } = await setup(t, { count: 3 });
 	const client = clientOf(topology, "alice", { bound: 10 });
 	const reads = { n: 0 };
@@ -455,11 +456,11 @@ test("a programming error a single call or a whole find finds once its bound has
 	}
 	await assert.rejects(client.create(SINGLES.create.input(++n), { repeat: "yes", get signal() { late(); return undefined; } }), TypeError, "a write's repeat flag that is not a boolean");
 	assert.equal(arrived(), 0, "nothing was sent");
-	assert.equal(entry.calls.length, 3 * errors.length + 1, "each single call's error thrown by the call layer it was delegated to; the whole find's by the find, no page handed on");
+	assert.equal(entry.calls.length, Object.keys(SINGLES).length * errors.length + 1, "each single call's error thrown by the call layer it was delegated to; the whole find's by the find, no page handed on");
 	assert.ok((await Promise.allSettled(entry.endings)).every((e) => e.status === "rejected"), "the call layer threw each");
 });
 
-test("an abort signal given that is not one - null, one without aborted, one whose aborted is not a boolean - is a programming error findPage, a write, a read and the whole find each throw, with time left and once a slow invocation getter has spent the whole bound, nothing sent; a genuine signal and none given are not", async (t) => {
+test("an abort signal given that is not one - null, one without aborted, one whose aborted is not a boolean - is a programming error findPage, changesPage, a write, a read and the whole find each throw, with time left and once a slow invocation getter has spent the whole bound, nothing sent; a genuine signal and none given are not", async (t) => {
 	const { topology, entry, arrived } = await setup(t, { count: 3 });
 	const client = clientOf(topology, "alice", { bound: 10 });
 	const calls = { ...SINGLES, find: { operation: "find", call: (c, input, o) => c.find(input, o), input: () => ({ kind: "any" }) } };

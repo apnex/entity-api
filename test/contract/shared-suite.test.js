@@ -3,7 +3,7 @@
 // the host in both (zorg's Delta 1, E11; zorg's target, EM8, EM9, EM10).
 //
 // Every case of every row entity-api carries from entity-store runs locally and remotely, none skipped; the
-// storage-port row is entity-store's own and runs there, and the following rows are listed as deferred.
+// storage-port row is entity-store's own and runs there, and follow-narrowed-set is listed as deferred.
 // Beside the suite: the same refusal locally and remotely for names of 63 and 64 characters, tags of 127 and
 // 128, an unknown kind, a target of 200 characters, and a reused write identity with an over-long name, which
 // identity-reused answers first (EM9); EM8's schedule of finds, run remotely by the suite's own case and
@@ -15,7 +15,7 @@ import { contractSuiteRows, registerEntityStoreSuite } from "@apnex/entity-store
 import { createLocalHarness, createRemoteHarness } from "../support/suite-harnesses.js";
 import { T0, note } from "../support/serving.js";
 
-const CARRIED = ["positioned-entity-write", "change-provenance", "expected-revision-write", "repeat-recognition", "identity-name-lookup", "find-by-kind-tags", "stated-history-bound", "store-refusal"];
+const CARRIED = ["positioned-entity-write", "change-provenance", "expected-revision-write", "repeat-recognition", "identity-name-lookup", "find-by-kind-tags", "changes-since-position", "stated-history-bound", "store-refusal"];
 
 const writes = [];
 const calls = [];
@@ -38,9 +38,9 @@ test("the suite covers exactly the rows entity-api carries from entity-store, ev
 	for (const row of CARRIED) assert.ok(remoteNames.some((n) => n.startsWith(`${row}: `)), `${row} runs remotely`);
 });
 
-test("the storage-port row runs locally only, in entity-store, and the following rows are deferred under D15, as entity-api defers them", async () => {
+test("the storage-port row runs locally only, in entity-store, and follow-narrowed-set is deferred under D15, as entity-api defers it", async () => {
 	assert.ok(contractSuiteRows.localOnly.includes("storage-port"));
-	assert.deepEqual({ ...contractSuiteRows.deferred }, { "changes-since-position": "D15", "follow-narrowed-set": "D15" });
+	assert.deepEqual({ ...contractSuiteRows.deferred }, { "follow-narrowed-set": "D15" });
 });
 
 test("EM8's schedule of finds - changes at 1000 and 1900, a bound of 1000, finds as of 0 and 1 at 2000 across a restart - is among the cases run remotely", () => {

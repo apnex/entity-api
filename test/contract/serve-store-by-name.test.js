@@ -1,7 +1,7 @@
 // serve-store-by-name - a host half serves one store's operations as named operations, under a name the
 // application chooses (zorg's target, EM10; E8 for a served store).
 //
-// Cases: each of the six operations is its own AGP endpoint `<name>/<operation>`, observed in AGP's route
+// Cases: each of the seven operations is its own AGP endpoint `<name>/<operation>`, observed in AGP's route
 // view, beside operation-call's `describe`; an operation the host does not serve has no endpoint, so AGP
 // refuses a call to it before any handler runs; `describe` answers EM10's description, every input shape the
 // full shape document EM10 writes, ordered by name; two stores served under two names on one node are each
@@ -26,6 +26,7 @@ const EM10_SHAPES = {
 	read: { $schema: D, type: "object", required: ["target"], additionalProperties: false, properties: { target: TARGET } },
 	find: { $schema: D, type: "object", required: ["kind"], additionalProperties: false, properties: { kind: { type: "string" }, tags: TAGS, after: { type: "string" }, asOf: { type: "integer" } } },
 	"history-bound": { $schema: D, type: "object", additionalProperties: false },
+	changes: { $schema: D, type: "object", required: ["since"], additionalProperties: false, properties: { since: { type: "integer" } } },
 };
 
 /** The endpoints host-a itself originates and exports. */
@@ -48,7 +49,7 @@ async function setup(t, options = {}) {
 test("each operation is served at its own AGP endpoint <name>/<operation>, seen in AGP's route view, beside describe", async (t) => {
 	const { topology } = await setup(t);
 	const routes = topology.caller("alice").node.operations.routes().candidates.filter((r) => r.originNodeId === "host-a").map((r) => r.endpoint).sort();
-	assert.deepEqual(routes, ["store/create", "store/delete", "store/describe", "store/find", "store/history-bound", "store/read", "store/update"]);
+	assert.deepEqual(routes, ["store/changes", "store/create", "store/delete", "store/describe", "store/find", "store/history-bound", "store/read", "store/update"]);
 	const hostEndpoints = topology.hosts.get("host-a").operations.routeExports().items.filter((r) => r.remoteNodeId === "alice" && r.originNodeId === "host-a" && r.state === "acked").map((r) => r.endpoint).sort();
 	assert.deepEqual(hostEndpoints, routes, "the host exports each endpoint to the caller");
 });
@@ -66,7 +67,7 @@ test("an operation the host does not serve has no endpoint: AGP refuses the call
 test("describe answers EM10's description: every operation ordered by name, its input the full shape document, answering whole", async (t) => {
 	const { raw, server } = await setup(t);
 	const ending = await within(raw.invoke({ host: "host-a", service: "store", operation: "describe", input: {}, bound: 5000 }));
-	const expected = { service: "store", operations: ["create", "delete", "find", "history-bound", "read", "update"].map((name) => ({ name, input: EM10_SHAPES[name], answers: "whole" })) };
+	const expected = { service: "store", operations: ["changes", "create", "delete", "find", "history-bound", "read", "update"].map((name) => ({ name, input: EM10_SHAPES[name], answers: "whole" })) };
 	assert.deepEqual(answerOf(ending), expected);
 	assert.deepEqual(server.description(), expected, "the server's own description is the one served");
 	assert.equal(server.service, "store");
@@ -123,7 +124,7 @@ test("closing the server withdraws every endpoint, and a later call is not deliv
 	const { topology, server, client } = await setup(t);
 	answerOf(await within(client.create(note("alpha"))));
 	await server.close();
-	for (const op of ["create", "update", "delete", "read", "find", "history-bound", "describe"]) await topology.hooks.gone("host-a", `store/${op}`);
+	for (const op of ["create", "update", "delete", "read", "find", "history-bound", "changes", "describe"]) await topology.hooks.gone("host-a", `store/${op}`);
 	const ending = await within(client.read({ target: { id: "e1.1" } }));
 	assert.deepEqual([ending.ending, ending.agpCode], ["not-delivered", "NO_ROUTE"]);
 });

@@ -16,7 +16,7 @@ import { createStoreClient, serveStore } from "@apnex/entity-api";
 import { openTopology } from "./topology.js";
 import { nodeEvidence, nodeWriter } from "./serving.js";
 
-const OPERATIONS = ["create", "update", "delete", "read", "find", "history-bound", "describe"];
+const OPERATIONS = ["create", "update", "delete", "read", "find", "history-bound", "changes", "describe"];
 
 /** Opens a store that must open over a port, with a clock the session sets. */
 function opener(options, clock, storage) {
@@ -47,6 +47,7 @@ export function createLocalHarness({ writer = "alice" } = {}) {
 						case "read": return store.read(input);
 						case "find": return store.find(input);
 						case "history-bound": return store.historyBound();
+						case "changes": return store.changes(input);
 						default: throw new Error(`no operation ${operation}`);
 					}
 				},
@@ -108,6 +109,7 @@ export function createRemoteHarness({ writer = "alice", bound = 120_000, observe
 					} else if (operation === "read") ending = await client.read(input);
 					else if (operation === "find") ending = await client.findPage(input);
 					else if (operation === "history-bound") ending = await client.historyBound();
+					else if (operation === "changes") ending = await client.changesPage(input);
 					else throw new Error(`no operation ${operation}`);
 					observe({ type: "call", service, operation, input, ending });
 					if (ending.ending === "answered") return { outcome: "answered", answer: ending.answer };

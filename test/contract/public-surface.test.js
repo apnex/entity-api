@@ -2,8 +2,8 @@
 //
 // Every path in package.json's exports is named in the map; each module path is imported by its public name
 // and its runtime exports compared with the map; every capability row of CONTRACT.md is served by some export
-// or deferred with a ruling, and every row of entity-api that zorg's Delta 1 fences is served and has a
-// contract test file named for it. The client half runs in a client, so the source imports no module
+// or deferred with a ruling, and every row of entity-api that zorg's Delta 1 fences, or that a later delta
+// has built, is served and has a contract test file named for it (zorg's target, EM14; Delta 4's amendment 1). The client half runs in a client, so the source imports no module
 // particular to one runtime outside a file whose name ends -adapter.ts and uses no global particular to Node
 // (principle 6; D31); AGP reaches it as types only, and only operation-call and shape-check (D55) at run time;
 // and no source file reads a clock or randomness itself:
@@ -24,7 +24,9 @@ const FENCED = [
 	"positioned-entity-write", "change-provenance", "expected-revision-write", "repeat-recognition", "identity-name-lookup", "find-by-kind-tags", "stated-history-bound", "store-refusal",
 	"honest-call-ending", "caller-chosen-bound", "peer-identity-evidence", "advertiser-instance-select",
 ];
-const DEFERRED = ["changes-since-position", "dated-local-view", "follow-closes-with-call", "follow-narrowed-set"];
+/** The rows zorg's Delta 1 leaves out that a later delta has built: changes-since-position, Delta 4's stage 2. */
+const BUILT_LATER = ["changes-since-position"];
+const DEFERRED = ["dated-local-view", "follow-closes-with-call", "follow-narrowed-set"];
 
 test("the export map names the package and exactly its exported paths", () => {
 	assert.equal(map.package, pkg.name);
@@ -51,9 +53,9 @@ const contractRows = () => {
 	return rows;
 };
 
-test("every contract row is served by an export or deferred with a ruling, never both; every fenced row is served", () => {
+test("every contract row is served by an export or deferred with a ruling, never both; every fenced row, and every row a later delta built, is served", () => {
 	const rows = contractRows();
-	assert.equal(rows.length, FENCED.length + DEFERRED.length, "the fence and the deferred rows are every row");
+	assert.equal(rows.length, FENCED.length + BUILT_LATER.length + DEFERRED.length, "the fence, the rows built later and the deferred rows are every row");
 	const served = new Set(Object.values(map.paths).flatMap((e) => Object.values(e.exports)).flatMap((x) => x.serves));
 	for (const row of rows) assert.ok(served.has(row) || map.deferred[row], `${row} is neither served nor deferred`);
 	for (const row of served) assert.ok(rows.includes(row), `${row} is not a row of CONTRACT.md`);
@@ -63,12 +65,13 @@ test("every contract row is served by an export or deferred with a ruling, never
 		assert.ok(rows.includes(row), `${row} is not a row of CONTRACT.md`);
 	}
 	for (const row of FENCED) assert.ok(served.has(row) && !map.deferred[row], `the fenced row ${row} is served`);
+	for (const row of BUILT_LATER) assert.ok(served.has(row) && !map.deferred[row], `the row ${row}, built later, is served`);
 	assert.deepEqual(Object.keys(map.deferred).sort(), DEFERRED, "only the rows D15 leaves out are deferred");
 	for (const row of DEFERRED) assert.equal(map.deferred[row], "D15");
 });
 
-test("every fenced row has a contract test file named for it, and no deferred row has one", () => {
-	for (const row of FENCED) assert.ok(fs.existsSync(path.join(root, "test", "contract", `${row}.test.js`)), `${row}.test.js`);
+test("every fenced row, and every row a later delta built, has a contract test file named for it, and no deferred row has one", () => {
+	for (const row of [...FENCED, ...BUILT_LATER]) assert.ok(fs.existsSync(path.join(root, "test", "contract", `${row}.test.js`)), `${row}.test.js`);
 	for (const row of DEFERRED) assert.ok(!fs.existsSync(path.join(root, "test", "contract", `${row}.test.js`)), `${row}.test.js is deferred`);
 });
 

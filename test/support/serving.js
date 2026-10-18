@@ -47,7 +47,7 @@ export const allowAll = () => ({ allowed: true });
 export async function serve(topology, { host = "host-a", service = "store", store, nameWriter = nodeWriter, policy = allowAll, evidence = nodeEvidence, wait = true } = {}) {
 	const serving = await serveStore({ node: topology.hostNodes.get(host), service, store, nameWriter, policy, ...(evidence === null ? {} : { evidence }) });
 	if (!serving.served) throw new Error(`the store was not served: ${JSON.stringify(serving.refusal)}`);
-	if (wait) for (const op of ["create", "update", "delete", "read", "find", "history-bound", "describe"]) await topology.hooks.ready(host, `${service}/${op}`);
+	if (wait) for (const op of ["create", "update", "delete", "read", "find", "history-bound", "changes", "describe"]) await topology.hooks.ready(host, `${service}/${op}`);
 	return serving.server;
 }
 

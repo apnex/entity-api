@@ -34,7 +34,7 @@ export function writerOnlyPolicy(log = []) {
 /** Wraps a store so every call the host half makes of it is pushed to `log` as its method name, then made. */
 export function recordingStore(store, log) {
 	const wrapped = {};
-	for (const method of ["create", "update", "delete", "read", "find", "historyBound", "checkRepeat"]) {
+	for (const method of ["create", "update", "delete", "read", "find", "historyBound", "changes", "checkRepeat"]) {
 		wrapped[method] = (...args) => { log.push(method); return store[method](...args); };
 	}
 	return wrapped;
