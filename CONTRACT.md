@@ -65,7 +65,7 @@ The host half only makes sense beside a store: the system running it contains th
 
 This repository, `apnex/entity-api`, private until its first working code is certified.\
 The package `@apnex/entity-api` exports `serveStore`, the host half, and `createStoreClient`, the client half, as `export-map.json` records.\
-`changes-since-position` is served by both halves, the host serving `changes` and the client offering `changesPage` and the whole `changes`, built in zorg's Delta 4 under `D64`; `follow-closes-with-call`, `dated-local-view` and `follow-narrowed-set` are deferred under zorg's `D15`.\
+`changes-since-position` is served by both halves, the host serving `changes` and the client offering `changesPage` and the whole `changes`, and `follow-narrowed-set` and `follow-closes-with-call` by both halves, the host serving `follow` in parts under its `maxFollows` and the client offering `follow`, each built in zorg's Delta 4 under `D64` (zorg's target, `EM16` and `EM18`); `dated-local-view` is deferred under zorg's `D15`.\
 It depends on `@apnex/entity-store`, `@apnex/operation-call`, `@apnex/shape-check` and `@agp/node` through `file:` links, takes AGP's and entity-store's types only, and imports no module particular to one runtime.
 
 ---
