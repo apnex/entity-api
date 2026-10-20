@@ -66,8 +66,8 @@ test("every contract row is served by an export or deferred with a ruling, never
 	}
 	for (const row of FENCED) assert.ok(served.has(row) && !map.deferred[row], `the fenced row ${row} is served`);
 	for (const row of BUILT_LATER) assert.ok(served.has(row) && !map.deferred[row], `the row ${row}, built later, is served`);
-	assert.deepEqual(Object.keys(map.deferred).sort(), DEFERRED, "only the rows D15 leaves out are deferred");
-	for (const row of DEFERRED) assert.equal(map.deferred[row], "D15");
+	assert.deepEqual(Object.keys(map.deferred).sort(), DEFERRED, "only the rows D64 keeps parked are deferred");
+	for (const row of DEFERRED) assert.equal(map.deferred[row], "D64");
 });
 
 test("every fenced row, and every row a later delta built, has a contract test file named for it, and no deferred row has one", () => {
