@@ -3,7 +3,8 @@
 // the host in both (zorg's Delta 1, E11; zorg's target, EM8, EM9, EM10).
 //
 // Every case of every row entity-api carries from entity-store runs locally and remotely, none skipped; the
-// storage-port row is entity-store's own and runs there, and follow-narrowed-set is listed as deferred.
+// storage-port row is entity-store's own and runs there; follow-narrowed-set runs remotely through the remote
+// harness's pages of its own (zorg's target, EM17, EM18), and the suite defers no row.
 // Beside the suite: the same refusal locally and remotely for names of 63 and 64 characters, tags of 127 and
 // 128, an unknown kind, a target of 200 characters, and a reused write identity with an over-long name, which
 // identity-reused answers first (EM9); EM8's schedule of finds, run remotely by the suite's own case and

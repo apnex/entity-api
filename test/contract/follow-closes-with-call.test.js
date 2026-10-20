@@ -58,13 +58,30 @@ function watchedStore(store, { onFollow, onWait } = {}) {
 /**
  * A host node whose sends of `part` messages a test may hold - `gate.hold = true` - each then waiting until the
  * test admits or refuses it; `gate.pending` lists them, and `gate.refuseNext` refuses the next part with a code.
+ * With `gate.deliverThenHold`, a part is delivered at once but its admission given to the host only when the test
+ * releases it. `gate.parts` counts the parts the host submitted, and `gate.cancels` the cancels that reached it.
  */
 function gatedNode(node, gate) {
+	gate.parts ??= 0;
+	gate.cancels ??= 0;
 	return new Proxy(node, {
 		get(target, prop) {
+			if (prop === "expose") {
+				return (endpoint, handler) => target.expose(endpoint, (payload, context) => {
+					if (payload?.type === "cancel") gate.cancels++;
+					return handler(payload, context);
+				});
+			}
 			if (prop === "send") {
 				return (source, destination, payload, options) => {
 					if (payload?.type === "part") {
+						gate.parts++;
+						if (gate.deliverThenHold) {
+							const sent = target.send(source, destination, payload, options);
+							return new Promise((resolve, reject) => {
+								gate.pending.push({ payload, admit: () => sent.then(resolve, reject), refuse: (code) => reject(Object.assign(new Error(`refused by the test, ${code}`), { code })) });
+							});
+						}
 						if (gate.refuseNext !== undefined) {
 							const code = gate.refuseNext;
 							gate.refuseNext = undefined;
@@ -173,18 +190,25 @@ test("a cancel while an item's admission is held: nothing more is asked meanwhil
 	}
 });
 
-test("a cancel while a checkpoint's admission is held ends answered counting it when admitted", async (t) => {
-	const gate = { hold: true, pending: [] };
-	const s = await setup(t, { gate });
-	seed(s.raw, note("outside", ["set:no"]));
-	const f = follow(s.client, { kind: "note", tags: ["set:yes"], since: 0 });
-	await until(() => gate.pending.length === 1, "the checkpoint held");
-	assert.equal(gate.pending[0].payload.answer.change, null);
-	f.controller.abort();
-	await new Promise((resolve) => setTimeout(resolve, 100));
-	gate.hold = false;
-	gate.pending[0].admit();
-	assert.deepEqual((await within(f.ending)).answer, { position: 1 });
+test("a cancel while a checkpoint's admission is held: one part only submitted and no page asked or wait begun meanwhile; admitted, it ends answered counting it, and refused, the host's end is failed and the call unknown with answer-not-sendable", async (t) => {
+	for (const settle of ["admit", "refuse"]) {
+		const gate = { hold: true, pending: [] };
+		const s = await setup(t, { gate });
+		seed(s.raw, note("outside", ["set:no"]));
+		const f = follow(s.client, { kind: "note", tags: ["set:yes"], since: 0 });
+		await until(() => gate.pending.length === 1, `${settle}: the checkpoint held`);
+		assert.equal(gate.pending[0].payload.answer.change, null);
+		f.controller.abort();
+		await until(() => gate.cancels === 1, `${settle}: the cancel reached the host`);
+		assert.deepEqual([gate.parts, s.pages.length, s.waits.length], [1, 1, 0], `${settle}: one part submitted, one page asked, no wait begun while it is held`);
+		gate.hold = false;
+		if (settle === "admit") gate.pending[0].admit();
+		else gate.pending[0].refuse("MESSAGE_TOO_LARGE");
+		const ending = await within(f.ending);
+		if (settle === "admit") assert.deepEqual([ending.ending, ending.answer, f.parts], ["answered", { position: 1 }, [{ through: 1, change: null }]]);
+		else assert.deepEqual([ending.ending, ending.reason, ending.agpCode, f.parts], ["unknown", "answer-not-sendable", "MESSAGE_TOO_LARGE", []]);
+		assert.deepEqual([gate.parts, s.pages.length, s.waits.length], [1, 1, 0], `${settle}: nothing more after it`);
+	}
 });
 
 // The follow's life (EM11, EM18).
@@ -335,51 +359,70 @@ test("a wait the store rejects with store-stopped though a cancel fired the sign
 	await until(() => first.waits.length === 1, "the host waiting");
 	const ending = await failing.stop();
 	assert.deepEqual([ending.ending, ending.reason], ["unknown", "operation-failed"], "the store's failure decides");
+	// The signal rejects the wait, and the store then stops before the host's continuation runs.
 	let stoppedStore = false;
-	const second = await setup(t, { wrap: { onFollow: (_i, n) => { if (n > 1 && stoppedStore) throw stopped; return undefined; } } });
+	const second = await setup(t, { wrap: {
+		onFollow: (_i, n) => { if (n > 1 && stoppedStore) throw stopped; return undefined; },
+		onWait: (_a, options) => new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => { reject(options.signal.reason); stoppedStore = true; }, { once: true })),
+	} });
 	const cancelled = follow(second.client, { kind: "note", since: 0 });
 	await until(() => second.waits.length === 1, "the host waiting");
 	const answered = await cancelled.stop();
-	stoppedStore = true;
+	assert.ok(stoppedStore, "the store had stopped before the host's continuation ran");
 	assert.deepEqual([answered.ending, answered.answer], ["answered", { position: 0 }], "the cancel decides; the store is not asked again");
+	assert.equal(second.pages.length, 1, "no page asked after the wait");
 });
 
 // Resuming (D6, EM18).
 
-test("a follow stopped after a whole change and resumed from its last through misses and repeats no item", async (t) => {
-	const s = await setup(t);
+/**
+ * Follows with each part delivered but its admission held, cancelling once `stopAt` parts have arrived and the
+ * cancel has reached the host, then releasing the admission: the call ends with exactly those parts taken.
+ */
+async function stoppedAt(s, gate, input, stopAt) {
+	const f = follow(s.client, input);
+	for (let n = 1; n <= stopAt; n++) {
+		await until(() => f.parts.length === n && gate.pending.length === n, `part ${n} delivered, its admission held`);
+		if (n < stopAt) gate.pending[n - 1].admit();
+	}
+	f.controller.abort();
+	await until(() => gate.cancels === 1, "the cancel reached the host");
+	assert.equal(gate.parts, stopAt, "no part submitted after the held one");
+	gate.deliverThenHold = false;
+	gate.pending[stopAt - 1].admit();
+	const ending = await within(f.ending);
+	assert.equal(f.parts.length, stopAt, "the call stopped with exactly those parts taken");
+	assert.equal(s.waits.length, 0, "it never reached the end of what the store held");
+	return { parts: f.parts, ending };
+}
+
+test("a follow cancelled after a whole change and resumed from its last through misses and repeats no item", async (t) => {
+	const gate = { deliverThenHold: true, pending: [] };
+	const s = await setup(t, { gate });
 	for (const name of ["a", "b", "c", "d"]) seed(s.raw, note(name, ["set:yes"]));
-	const taken = [];
-	let last = 0;
-	const first = follow(s.client, { kind: "note", tags: ["set:yes"], since: 0 }, { onPart: (p) => { if (taken.length < 2) { taken.push(p.change); last = p.through; } } });
-	await until(() => s.waits.length === 1, "the host waiting");
-	await first.stop();
-	assert.equal(last, 2, "the reader stopped after the change at 2");
-	const second = follow(s.client, { kind: "note", tags: ["set:yes"], since: last });
-	await until(() => s.waits.length === 2, "the host waiting again");
+	const first = await stoppedAt(s, gate, { kind: "note", tags: ["set:yes"], since: 0 }, 2);
+	assert.deepEqual(first.ending.answer, { position: 2 }, "answered with the last part's through, after the change at 2");
+	const second = follow(s.client, { kind: "note", tags: ["set:yes"], since: first.parts.at(-1).through });
+	await until(() => s.waits.length === 1, "the resumed follow waiting");
 	await second.stop();
-	taken.push(...second.parts.map((p) => p.change));
-	assert.deepEqual(taken.map((c) => c.entity.name), ["a", "b", "c", "d"], "every item once, in order");
+	assert.deepEqual([...first.parts, ...second.parts].map((p) => p.change.entity.name), ["a", "b", "c", "d"], "every item once, in order");
 });
 
-test("a change of two writes, recovered from a log, stopped between its items and resumed from the last through, gives its first item again and loses neither", async (t) => {
+test("a change of two writes, recovered from a log, cancelled between its items and resumed from the last through, gives its first item again and loses neither", async (t) => {
 	const storage = createMemoryStoragePort();
 	const at = iso(T0);
 	const env = (id, name, position, created) => ({ id, kind: "note", name, tags: ["set:yes"], body: { pointer: `https://example.com/${name}`, summary: `about ${name}` }, revision: 1, created: { position: created, at, writer: "fixture" }, changed: { position, at, writer: "fixture" } });
 	const left = env("e1.1", "left", 1, 1);
 	const right = env("e1.2", "right", 1, 1);
 	storage.append({ type: "change", position: 1, at, writer: "fixture", writeId: "f1", digest: "0".repeat(64), answer: { position: 1, entity: left }, writes: [{ operation: "create", id: "e1.1", entity: left }, { operation: "create", id: "e1.2", entity: right }] });
-	const s = await setup(t, { storeOptions: { storage } });
-	const taken = [];
-	let last = 0;
-	const first = follow(s.client, { kind: "note", since: 0 }, { onPart: (p) => { if (taken.length === 0) { taken.push(p.change.entity.name); last = p.through; } } });
-	await until(() => s.waits.length === 1, "the host waiting");
-	await first.stop();
-	assert.equal(last, 0, "stopped after the first item, whose through is one less than its change's position");
-	const second = follow(s.client, { kind: "note", since: last });
-	await until(() => s.waits.length === 2, "the host waiting again");
+	const gate = { deliverThenHold: true, pending: [] };
+	const s = await setup(t, { storeOptions: { storage }, gate });
+	const first = await stoppedAt(s, gate, { kind: "note", since: 0 }, 1);
+	assert.deepEqual([first.parts[0].through, first.ending.answer], [0, { position: 0 }], "cancelled after the first item, whose through is one less than its change's position");
+	const second = follow(s.client, { kind: "note", since: first.parts[0].through });
+	await until(() => s.waits.length === 1, "the resumed follow waiting");
 	await second.stop();
-	assert.deepEqual([...taken, ...second.parts.map((p) => p.change.entity.name)], ["left", "left", "right"], "the first item given again, neither lost");
+	assert.deepEqual([...first.parts, ...second.parts].map((p) => p.change.entity.name), ["left", "left", "right"], "the first item given again, neither lost");
 });
 
 // Parts AGP refuses and callers accepting none (EM11, EM18).
