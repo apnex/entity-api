@@ -10,13 +10,18 @@
 // request's evidence, never from its input. A remote write identity is the invocation identity: the suite's
 // newWriteId gives a new invocation identity, and a write names it as its invocation, so the host reads it
 // from operation-call's envelope (EM7).
+//
+// A remote `follow` answers in parts and never ends of itself (EM18), so the remote harness gives the suite's
+// follow cases one page of their own (EM17): it reads the store's position, follows through the client half,
+// collecting each part's item, until the host waits for the next change - seen by the store it serves - and
+// then cancels, giving the items, the ending's position as `through`, and the position read.
 import { systemCallClock } from "@apnex/operation-call";
 import { createMemoryStoragePort, openEntityStore } from "@apnex/entity-store";
 import { createStoreClient, serveStore } from "@apnex/entity-api";
 import { openTopology } from "./topology.js";
 import { nodeEvidence, nodeWriter } from "./serving.js";
 
-const OPERATIONS = ["create", "update", "delete", "read", "find", "history-bound", "changes", "describe"];
+const OPERATIONS = ["create", "update", "delete", "read", "find", "history-bound", "changes", "follow", "describe"];
 
 /** Opens a store that must open over a port, with a clock the session sets. */
 function opener(options, clock, storage) {
@@ -48,6 +53,7 @@ export function createLocalHarness({ writer = "alice" } = {}) {
 						case "find": return store.find(input);
 						case "history-bound": return store.historyBound();
 						case "changes": return store.changes(input);
+						case "follow": return store.follow(input);
 						default: throw new Error(`no operation ${operation}`);
 					}
 				},
@@ -77,8 +83,20 @@ export function createRemoteHarness({ writer = "alice", bound = 120_000, observe
 			let now = time;
 			const open = opener(options, { now: () => now }, createMemoryStoragePort());
 			const nameWriter = (caller) => { const named = nodeWriter(caller); observe({ type: "writer", service, writer: named }); return named; };
+			// Each wait the host begins for the next change, so a follow knows the host has sent all it holds.
+			let waits = [];
+			const watched = (store) => {
+				const methods = ["create", "update", "delete", "read", "find", "historyBound", "changes", "follow", "checkRepeat"];
+				const wrapper = Object.fromEntries(methods.map((m) => [m, (...args) => store[m](...args)]));
+				wrapper.waitForChange = (after, opts) => {
+					const waiting = store.waitForChange(after, opts);
+					for (const notify of waits.splice(0)) notify(after);
+					return waiting;
+				};
+				return wrapper;
+			};
 			const serveOnce = async () => {
-				const serving = await serveStore({ node: topology.hostNodes.get("host-a"), service, store: open(), nameWriter, policy: () => ({ allowed: true }), evidence: nodeEvidence });
+				const serving = await serveStore({ node: topology.hostNodes.get("host-a"), service, store: watched(open()), nameWriter, policy: () => ({ allowed: true }), evidence: nodeEvidence });
 				if (!serving.served) throw new Error(`not served: ${JSON.stringify(serving.refusal)}`);
 				await ready(service);
 				return serving.server;
@@ -110,6 +128,22 @@ export function createRemoteHarness({ writer = "alice", bound = 120_000, observe
 					else if (operation === "find") ending = await client.findPage(input);
 					else if (operation === "history-bound") ending = await client.historyBound();
 					else if (operation === "changes") ending = await client.changesPage(input);
+					else if (operation === "follow") {
+						const position = (await client.historyBound()).answer.position;
+						const items = [];
+						const controller = new AbortController();
+						const hostWaits = new Promise((resolve) => { waits.push(resolve); });
+						const following = client.follow(input, { signal: controller.signal, onPart: (part) => { if (part.change !== null) items.push(part.change); } });
+						// The follow ends of itself only when refused; otherwise it is cancelled once the host waits.
+						const first = await Promise.race([following.then(() => "ended"), hostWaits.then(() => "waiting")]);
+						if (first === "waiting") controller.abort();
+						waits = [];
+						ending = await following;
+						if (ending.ending === "answered") {
+							observe({ type: "call", service, operation, input, ending });
+							return { outcome: "answered", answer: { position, through: ending.answer.position, changes: items } };
+						}
+					}
 					else throw new Error(`no operation ${operation}`);
 					observe({ type: "call", service, operation, input, ending });
 					if (ending.ending === "answered") return { outcome: "answered", answer: ending.answer };

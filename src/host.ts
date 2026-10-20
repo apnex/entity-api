@@ -17,15 +17,21 @@
  * 5. a refusal is returned unchanged; a recognised repeat returns the first answer; any other write goes to
  *    the store, whose answer or refusal is returned unchanged.
  *
- * A read, a find, `history-bound` and `changes` are ruled on by the policy before the store answers them. entity-api
- * decides nothing itself: it never refuses for its own reasons, and owns no refusal code. The caller's
+ * A read, a find, `history-bound` and `changes` are ruled on by the policy before the store answers them.
+ *
+ * `follow` answers in parts (EM18): the policy rules as for a read, then the store's first page, then the host's
+ * `maxFollows`, beyond which a follow is refused `too-many-follows`, entity-api's one refusal; a follow held sends
+ * each page's items as parts, one at a time, a checkpoint when a page's `through` passes the last part's, asks the
+ * next page at once or waits for the next change, and returns answered `{position}` once its signal fires or a part
+ * is not sent. Otherwise entity-api decides nothing itself and never refuses for its own reasons. The caller's
  * evidence, the writer's name and the policy's ruling and refusal are read as plain data through shape-check's
  * `plain-json-value` and operation-call's `readRefusalRecord`, running none of their code (zorg's D54, D55).
  * Nothing here is particular to one runtime (zorg's D31).
  */
 import type { AgpNode } from "@agp/node";
-import type { EntityEnvelope, EntityStore, RepeatCheck, StoreOutcome, WriteContext } from "@apnex/entity-store";
+import type { EntityEnvelope, EntityStore, FollowAnswer, FollowInput, RepeatCheck, StoreOutcome, WriteContext } from "@apnex/entity-store";
 import {
+	type CallClock,
 	createOperationHost,
 	type DeliveryContext,
 	type Description,
@@ -95,6 +101,35 @@ export interface StoreServerOptions {
 	readonly policy: ApplicationPolicy;
 	/** operation-call's evidence port, asked for each request as it arrives; its answer is the caller's evidence. */
 	readonly evidence?: EvidenceFunction;
+	/**
+	 * The most follows the host holds at once, a whole number from 1 to 1024, 16 when absent (EM18); kept below the
+	 * node's count of active AGP handlers, so cancels, refusals and other operations keep handlers.
+	 */
+	readonly maxFollows?: number;
+	/** The clock port operation-call's host keeps its liveness and its alive on (EM11); operation-call's own when absent. */
+	readonly clock?: CallClock;
+}
+
+/** The host's `maxFollows` when the application gives none (EM18). */
+export const DEFAULT_MAX_FOLLOWS = 16;
+
+/** Throws a RangeError unless a `maxFollows` given is a whole number from 1 to 1024 (EM18). */
+function checkMaxFollows(value: unknown): number {
+	if (value === undefined) return DEFAULT_MAX_FOLLOWS;
+	if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 1024) throw new RangeError("serveStore's maxFollows is a whole number from 1 to 1024");
+	return value;
+}
+
+/** The refusal of a follow beyond the host's `maxFollows` (EM9, EM18): entity-api's one refusal. */
+function tooManyFollows(limit: number): RefusalRecord {
+	return Object.freeze({
+		part: "entity-api",
+		code: "too-many-follows",
+		what: "The host already holds as many follows as it allows.",
+		why: "Each follow holds one of the host's handlers for its life, so the host bounds how many it holds and refuses the next rather than queue it.",
+		fix: "Follow again once another follow has ended, or end a follow you no longer need by cancelling its call.",
+		details: Object.freeze({ limit }),
+	});
 }
 
 /** A store being served. */
@@ -225,14 +260,19 @@ function result(outcome: StoreOutcome<unknown>): OperationResult {
 /** Serves a store's operations under a name, each at its own endpoint, or gives operation-call's refusal of the name. */
 export async function serveStore(options: StoreServerOptions): Promise<StoreServing> {
 	if (options === null || typeof options !== "object") throw new TypeError("serveStore needs { node, service, store, nameWriter, policy }");
-	const { node, service, store, nameWriter, policy, evidence } = options;
-	for (const method of ["create", "update", "delete", "read", "find", "historyBound", "changes", "checkRepeat"] as const) {
+	const { node, service, store, nameWriter, policy, evidence, clock } = options;
+	const followLimit = checkMaxFollows(options.maxFollows);
+	for (const method of ["create", "update", "delete", "read", "find", "historyBound", "changes", "follow", "waitForChange", "checkRepeat"] as const) {
 		if (!store || typeof store[method] !== "function") throw new TypeError(`serveStore needs an open entity store, offering ${method}`);
 	}
 	if (typeof nameWriter !== "function") throw new TypeError("serveStore needs the application's writer naming, a function of the caller's evidence");
 	if (typeof policy !== "function") throw new TypeError("serveStore needs the application's policy, a function ruling on each operation");
 
-	const opening = await createOperationHost(node, evidence === undefined ? { service } : { service, evidence: typeof evidence === "function" ? plainEvidence(evidence) : evidence });
+	const opening = await createOperationHost(node, {
+		service,
+		...(evidence === undefined ? {} : { evidence: typeof evidence === "function" ? plainEvidence(evidence) : evidence }),
+		...(clock === undefined ? {} : { clock }),
+	});
 	if (!opening.opened) return { served: false, refusal: opening.refusal };
 	const host = opening.host;
 
@@ -260,8 +300,76 @@ export async function serveStore(options: StoreServerOptions): Promise<StoreServ
 		}
 	};
 
+	/** How many follows the host holds now (EM18). */
+	let held = 0;
+
+	/**
+	 * A follow (EM18): the policy rules as for a read, then the store's first page, then `maxFollows`, all made at
+	 * once, whatever the signal; a follow held is released however its operation returns.
+	 */
+	const follow = async (input: JsonValue, context: OperationContext, evidence: JsonValue): Promise<OperationResult> => {
+		const ruling = rule(policy, Object.freeze({ operation: "follow", input: plain(input, "an operation's input"), evidence, delivery: context.delivery, writer: null, target: null, repeat: false }));
+		if (!ruling.allowed) return { outcome: "refused", refusal: ruling.refusal };
+		const query = input as unknown as FollowInput;
+		const first = store.follow(query);
+		if (first.outcome === "refused") return result(first);
+		if (held >= followLimit) return { outcome: "refused", refusal: tooManyFollows(followLimit) };
+		held++;
+		try {
+			return await stream(query, first.answer, context);
+		} finally {
+			held--;
+		}
+	};
+
+	/**
+	 * Sends a held follow's pages as parts (EM18): each item one part, awaited before the next, its `through` the
+	 * item's position when it is the last of its change in the page and one less otherwise; a checkpoint once the
+	 * page's items are sent when the page's `through` is past the last part's; the next page at once while changes
+	 * remain, or once the store's position passes the page's `through`. It returns answered `{position}`, the
+	 * `through` of the last part admitted or `since`, once the signal is found fired or a part is not sent.
+	 */
+	const stream = async (query: FollowInput, firstPage: FollowAnswer, context: OperationContext): Promise<OperationResult> => {
+		const { signal } = context;
+		const part = context.part as (answer: JsonValue) => Promise<boolean>;
+		let last = query.since;
+		const ended = (): OperationResult => ({ outcome: "answered", answer: { position: last } });
+		let page = firstPage;
+		for (;;) {
+			const items = page.changes;
+			for (let i = 0; i < items.length; i++) {
+				if (signal.aborted) return ended();
+				const item = items[i] as FollowAnswer["changes"][number];
+				const next = items[i + 1];
+				const through = next !== undefined && next.position === item.position ? item.position - 1 : item.position;
+				if (!(await part({ through, change: item as unknown as JsonValue }))) return ended();
+				last = through;
+			}
+			if (page.through > last) {
+				if (signal.aborted) return ended();
+				if (!(await part({ through: page.through, change: null }))) return ended();
+				last = page.through;
+			}
+			const since = page.through;
+			if (since >= page.position) {
+				if (signal.aborted) return ended();
+				try {
+					await store.waitForChange(since, { signal });
+				} catch (error) {
+					// The wait's rejection decides: the signal's reason is a cancel, anything else - store-stopped - is thrown.
+					if (signal.aborted && error === signal.reason) return ended();
+					throw error;
+				}
+			}
+			if (signal.aborted) return ended();
+			const following = store.follow({ ...query, since });
+			if (following.outcome === "refused") return result(following);
+			page = following.answer;
+		}
+	};
+
 	/** A read, a find, history-bound or changes: the policy rules, then the store answers (EM13, EM16). */
-	const answer = (operation: Exclude<StoreOperation, WriteOperation>, input: JsonValue, context: OperationContext, evidence: JsonValue): OperationResult => {
+	const answer = (operation: Exclude<StoreOperation, WriteOperation | "follow">, input: JsonValue, context: OperationContext, evidence: JsonValue): OperationResult => {
 		const ruling = rule(policy, Object.freeze({ operation, input: plain(input, "an operation's input"), evidence, delivery: context.delivery, writer: null, target: null, repeat: false }));
 		if (!ruling.allowed) return { outcome: "refused", refusal: ruling.refusal };
 		switch (operation) {
@@ -274,15 +382,16 @@ export async function serveStore(options: StoreServerOptions): Promise<StoreServ
 
 	try {
 		for (const operation of STORE_OPERATIONS) {
-			const handler = (input: JsonValue, context: OperationContext): OperationResult => {
+			const handler = (input: JsonValue, context: OperationContext): OperationResult | Promise<OperationResult> => {
 				// The request's evidence, read once as plain data through shape-check's readPlainJson into a deeply
 				// frozen JSON value that the writer naming and the policy share; evidence that is not plain JSON is
 				// the application's defect, thrown, so the invocation ends `failed` with `operation-failed` before
 				// either is asked (EM13; zorg's D54, D55).
 				const evidence = plain(context.evidence, "the request's evidence");
+				if (operation === "follow") return follow(input, context, evidence);
 				return isWrite(operation) ? write(operation, input, context, evidence) : answer(operation, input, context, evidence);
 			};
-			const declared = await host.declare({ name: operation, input: inputShape(operation) as JsonValue, answers: "whole" }, handler);
+			const declared = await host.declare({ name: operation, input: inputShape(operation) as JsonValue, answers: operation === "follow" ? "parts" : "whole" }, handler);
 			if (!declared.declared) throw new Error(`operation-call refused to declare ${operation}: ${declared.refusal.code}; this is a defect of entity-api`);
 		}
 	} catch (error) {

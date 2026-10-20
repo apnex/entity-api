@@ -81,7 +81,7 @@ test("a whole find's bound is one deadline for all its pages, from the moment it
 	for (let i = 1; i <= 5; i++) opened.store.create({ kind: "any", name: `e${i}`, tags: [], body: { pad: "x".repeat(200_000) } }, { writer: "w", writeId: `${i}` });
 	let pages = 0;
 	let requests = 0;
-	const store = { checkRepeat: (...a) => opened.store.checkRepeat(...a), read: (...a) => opened.store.read(...a), historyBound: () => opened.store.historyBound(), changes: (...a) => opened.store.changes(...a), create: (...a) => opened.store.create(...a), update: (...a) => opened.store.update(...a), delete: (...a) => opened.store.delete(...a),
+	const store = { checkRepeat: (...a) => opened.store.checkRepeat(...a), read: (...a) => opened.store.read(...a), historyBound: () => opened.store.historyBound(), changes: (...a) => opened.store.changes(...a), follow: (...a) => opened.store.follow(...a), waitForChange: (...a) => opened.store.waitForChange(...a), create: (...a) => opened.store.create(...a), update: (...a) => opened.store.update(...a), delete: (...a) => opened.store.delete(...a),
 		find(input) {
 			const page = opened.store.find(input);
 			// The first page's answer leaves 600 ms; the second's 249.5.
@@ -270,7 +270,7 @@ async function realClock(t, { identities, find } = {}) {
 	const opened = openStore({ maxEntityBytes: 262_144 });
 	for (let i = 1; i <= 3; i++) opened.store.create({ kind: "any", name: `e${i}`, tags: [], body: { pad: "x".repeat(200_000) } }, { writer: "w", writeId: `${i}` });
 	let pages = 0;
-	const store = { ...Object.fromEntries(["create", "update", "delete", "read", "historyBound", "changes", "checkRepeat"].map((m) => [m, (...a) => opened.store[m](...a)])),
+	const store = { ...Object.fromEntries(["create", "update", "delete", "read", "historyBound", "changes", "follow", "waitForChange", "checkRepeat"].map((m) => [m, (...a) => opened.store[m](...a)])),
 		find(input) { const n = ++pages; const page = opened.store.find(input); find?.(n); return page; } };
 	await serve(topology, { store });
 	return { topology, entry: topology.caller("alice"), pages: () => pages };

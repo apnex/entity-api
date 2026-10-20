@@ -3,14 +3,12 @@
   "paths": {
     ".": {
       "exports": {
-        "serveStore": { "part": "entity-api", "serves": ["serve-store-by-name", "ask-application-policy", "host-named-writer", "peer-identity-evidence", "positioned-entity-write", "change-provenance", "stated-history-bound", "expected-revision-write", "repeat-recognition", "identity-name-lookup", "find-by-kind-tags", "changes-since-position", "store-refusal"] },
-        "createStoreClient": { "part": "entity-api", "serves": ["local-like-client", "positioned-entity-write", "change-provenance", "stated-history-bound", "expected-revision-write", "repeat-recognition", "identity-name-lookup", "find-by-kind-tags", "changes-since-position", "store-refusal", "caller-chosen-bound", "honest-call-ending", "advertiser-instance-select"] }
+        "serveStore": { "part": "entity-api", "serves": ["serve-store-by-name", "ask-application-policy", "host-named-writer", "peer-identity-evidence", "positioned-entity-write", "change-provenance", "stated-history-bound", "expected-revision-write", "repeat-recognition", "identity-name-lookup", "find-by-kind-tags", "changes-since-position", "follow-narrowed-set", "follow-closes-with-call", "store-refusal"] },
+        "createStoreClient": { "part": "entity-api", "serves": ["local-like-client", "positioned-entity-write", "change-provenance", "stated-history-bound", "expected-revision-write", "repeat-recognition", "identity-name-lookup", "find-by-kind-tags", "changes-since-position", "follow-narrowed-set", "follow-closes-with-call", "store-refusal", "caller-chosen-bound", "honest-call-ending", "advertiser-instance-select"] }
       }
     }
   },
   "deferred": {
-    "follow-closes-with-call": "D15",
-    "dated-local-view": "D15",
-    "follow-narrowed-set": "D15"
+    "dated-local-view": "D15"
   }
 }

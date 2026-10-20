@@ -42,12 +42,16 @@ export const allowAll = () => ({ allowed: true });
 
 /**
  * Serves a store on a host of the topology and waits until every caller can reach each operation. Options
- * are serveStore's, with the tests' evidence, writer naming and permissive policy by default.
+ * are serveStore's - maxFollows and the host's clock among them - with the tests' evidence, writer naming and
+ * permissive policy by default.
  */
-export async function serve(topology, { host = "host-a", service = "store", store, nameWriter = nodeWriter, policy = allowAll, evidence = nodeEvidence, wait = true } = {}) {
-	const serving = await serveStore({ node: topology.hostNodes.get(host), service, store, nameWriter, policy, ...(evidence === null ? {} : { evidence }) });
+export async function serve(topology, { host = "host-a", service = "store", store, nameWriter = nodeWriter, policy = allowAll, evidence = nodeEvidence, wait = true, maxFollows, clock } = {}) {
+	const serving = await serveStore({
+		node: topology.hostNodes.get(host), service, store, nameWriter, policy, ...(evidence === null ? {} : { evidence }),
+		...(maxFollows === undefined ? {} : { maxFollows }), ...(clock === undefined ? {} : { clock }),
+	});
 	if (!serving.served) throw new Error(`the store was not served: ${JSON.stringify(serving.refusal)}`);
-	if (wait) for (const op of ["create", "update", "delete", "read", "find", "history-bound", "changes", "describe"]) await topology.hooks.ready(host, `${service}/${op}`);
+	if (wait) for (const op of ["create", "update", "delete", "read", "find", "history-bound", "changes", "follow", "describe"]) await topology.hooks.ready(host, `${service}/${op}`);
 	return serving.server;
 }
 
@@ -62,7 +66,7 @@ export function clientOf(topology, name, { host = "host-a", service = "store", b
  */
 export function requested(call) {
 	const fields = {};
-	for (const name of ["host", "service", "operation", "input", "bound", "invocation", "repeat", "signal"]) {
+	for (const name of ["host", "service", "operation", "input", "bound", "invocation", "repeat", "signal", "onPart"]) {
 		const value = call[name];
 		if (value !== undefined) fields[name] = value;
 	}

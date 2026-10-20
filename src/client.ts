@@ -20,7 +20,9 @@
  * `{position, entries}`, read page by page as of the first page's position within one deadline; `findPage` is
  * one page, exactly as the store answers it. `changes` is the whole `changes` of EM16, run as the whole find
  * is, each later page asked since the previous page's `next`, and answering every item, `{position, changes}`,
- * with the last page's position; `changesPage` is one page, exactly as the store answers it. Nothing here
+ * with the last page's position; `changesPage` is one page, exactly as the store answers it. `follow` is a single
+ * call accepting parts (EM18): its request's `onPart` getter reads the application's `onPart` once, throwing a
+ * TypeError when it is absent or not a function, and gives it each part's answer, `{through, change}`. Nothing here
  * is particular to one runtime (zorg's D31): time and randomness come from the ports it is given, by default
  * operation-call's.
  */
@@ -88,6 +90,17 @@ export interface WriteOptions extends CallOptions {
 	readonly repeat?: boolean;
 }
 
+/** A part of a follow as the client gives it (EM18): the position through which every item has been sent, and one item or null. */
+export interface FollowPart {
+	readonly through: number;
+	readonly change: JsonValue | null;
+}
+
+/** What a follow names besides a call's options: the function given each part, in order (EM18). */
+export interface FollowOptions extends CallOptions {
+	readonly onPart: (part: FollowPart) => unknown;
+}
+
 /**
  * One of the caller's endings as a whole find gives it: every field the caller gave, unchanged, but its
  * invocation and attempt the first page's, and its attempt null when the bound passed before any page was sent.
@@ -126,6 +139,11 @@ export interface StoreClient {
 	changesPage(input: JsonInput, options?: CallOptions): Promise<CallEnding>;
 	/** The whole `changes`: every change since a position, answered `{position, changes}`, within one deadline (EM16). */
 	changes(input: JsonInput, options?: CallOptions): Promise<ChangesEnding>;
+	/**
+	 * A follow (EM18): one call accepting parts, each part's `{through, change}` given to `onPart` in order; it ends
+	 * only when its call ends, answered `{position}` once cancelled, and the reader resumes from its last part.
+	 */
+	follow(input: JsonInput, options: FollowOptions): Promise<CallEnding>;
 }
 
 /** Throws unless a bound is a whole number of milliseconds from 1 to 2147483647 (EM12). */
@@ -335,10 +353,10 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 	 * defaults to the client's; options that are neither an object nor absent throw a TypeError as an option is
 	 * read. Nothing is read, checked or timed here: the call layer owns all of it.
 	 */
-	const single = async (operation: StoreOperation, input: JsonInput, call: WriteOptions | undefined, repeatable: boolean): Promise<CallEnding> => {
+	const single = async (operation: StoreOperation, input: JsonInput, call: (WriteOptions & Partial<FollowOptions>) | undefined, repeatable: boolean, parts = false): Promise<CallEnding> => {
 		const reads = new Map<string, OptionRead>();
 		/** The application's option `name`, read at most once. */
-		const option = (name: "bound" | "invocation" | "signal" | "repeat"): unknown => {
+		const option = (name: "bound" | "invocation" | "signal" | "repeat" | "onPart"): unknown => {
 			let read = reads.get(name);
 			if (read === undefined) {
 				try {
@@ -353,7 +371,7 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 			return read.value;
 		};
 		const request = { host, service, operation, input } as { -readonly [K in keyof CallRequest]: CallRequest[K] };
-		const getter = (name: "bound" | "invocation" | "signal" | "repeat", get: () => unknown): void => {
+		const getter = (name: "bound" | "invocation" | "signal" | "repeat" | "onPart", get: () => unknown): void => {
 			Object.defineProperty(request, name, { get, enumerable: true, configurable: false });
 		};
 		getter("bound", () => {
@@ -364,6 +382,17 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 		getter("invocation", () => option("invocation"));
 		if (repeatable) getter("repeat", () => option("repeat"));
 		getter("signal", () => option("signal"));
+		if (parts) {
+			// The application's onPart, read once, as the call layer reads the request; the call layer gives each part
+			// `{sequence, answer}` and the application is given its answer, `{through, change}`, deeply frozen (EM18).
+			let wrapped: ((part: { readonly answer: JsonValue }) => unknown) | undefined;
+			getter("onPart", () => {
+				const given = option("onPart");
+				if (typeof given !== "function") throw new TypeError("a follow needs onPart, a function given each part's { through, change }");
+				wrapped ??= (part) => (given as (answer: FollowPart) => unknown)(part.answer as unknown as FollowPart);
+				return wrapped;
+			});
+		}
 		return callerInvoke.call(caller, Object.freeze(request));
 	};
 
@@ -431,5 +460,6 @@ export function createStoreClient(options: StoreClientOptions): StoreClient {
 		historyBound: (o?: CallOptions) => single("history-bound", {}, o, false),
 		changesPage: (input: JsonInput, o?: CallOptions) => single("changes", input, o, false),
 		changes: (input: JsonInput, o?: CallOptions) => whole(CHANGES, input, o),
+		follow: (input: JsonInput, o: FollowOptions) => single("follow", input, o, false, true),
 	});
 }

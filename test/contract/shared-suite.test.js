@@ -15,7 +15,7 @@ import { contractSuiteRows, registerEntityStoreSuite } from "@apnex/entity-store
 import { createLocalHarness, createRemoteHarness } from "../support/suite-harnesses.js";
 import { T0, note } from "../support/serving.js";
 
-const CARRIED = ["positioned-entity-write", "change-provenance", "expected-revision-write", "repeat-recognition", "identity-name-lookup", "find-by-kind-tags", "changes-since-position", "stated-history-bound", "store-refusal"];
+const CARRIED = ["positioned-entity-write", "change-provenance", "expected-revision-write", "repeat-recognition", "identity-name-lookup", "find-by-kind-tags", "changes-since-position", "follow-narrowed-set", "stated-history-bound", "store-refusal"];
 
 const writes = [];
 const calls = [];
@@ -38,9 +38,9 @@ test("the suite covers exactly the rows entity-api carries from entity-store, ev
 	for (const row of CARRIED) assert.ok(remoteNames.some((n) => n.startsWith(`${row}: `)), `${row} runs remotely`);
 });
 
-test("the storage-port row runs locally only, in entity-store, and follow-narrowed-set is deferred under D15, as entity-api defers it", async () => {
+test("the storage-port row runs locally only, in entity-store, and the suite defers no row: follow-narrowed-set runs remotely from Delta 4's stage 7", async () => {
 	assert.ok(contractSuiteRows.localOnly.includes("storage-port"));
-	assert.deepEqual({ ...contractSuiteRows.deferred }, { "follow-narrowed-set": "D15" });
+	assert.deepEqual({ ...contractSuiteRows.deferred }, {});
 });
 
 test("EM8's schedule of finds - changes at 1000 and 1900, a bound of 1000, finds as of 0 and 1 at 2000 across a restart - is among the cases run remotely", () => {

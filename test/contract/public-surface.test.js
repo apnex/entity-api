@@ -24,9 +24,9 @@ const FENCED = [
 	"positioned-entity-write", "change-provenance", "expected-revision-write", "repeat-recognition", "identity-name-lookup", "find-by-kind-tags", "stated-history-bound", "store-refusal",
 	"honest-call-ending", "caller-chosen-bound", "peer-identity-evidence", "advertiser-instance-select",
 ];
-/** The rows zorg's Delta 1 leaves out that a later delta has built: changes-since-position, Delta 4's stage 2. */
-const BUILT_LATER = ["changes-since-position"];
-const DEFERRED = ["dated-local-view", "follow-closes-with-call", "follow-narrowed-set"];
+/** The rows zorg's Delta 1 leaves out that a later delta has built: changes-since-position, Delta 4's stage 2, and the following rows, its stage 7. */
+const BUILT_LATER = ["changes-since-position", "follow-narrowed-set", "follow-closes-with-call"];
+const DEFERRED = ["dated-local-view"];
 
 test("the export map names the package and exactly its exported paths", () => {
 	assert.equal(map.package, pkg.name);

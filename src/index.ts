@@ -5,9 +5,10 @@
  * createStoreClient - the client half: local-like-client, with the store's carried rows and operation-call's
  *   honest-call-ending, caller-chosen-bound and advertiser-instance-select, the whole find of EM10 and the
  *   whole changes of EM16.
- * follow-closes-with-call, dated-local-view and follow-narrowed-set are deferred (zorg's D15) until zorg's
- * Delta 4 builds the first and the last.
+ * follow-narrowed-set and follow-closes-with-call are served by both halves (zorg's Delta 4, stage 7; EM18):
+ *   serveStore's follow, in parts under its maxFollows, and the client's follow.
+ * dated-local-view is deferred (zorg's D15).
  */
 export { serveStore, type ApplicationPolicy, type CallerEvidence, type PolicyQuestion, type PolicyRuling, type StoreServer, type StoreServerOptions, type StoreServing, type WriterNaming } from "./host.js";
-export { createStoreClient, type CallOptions, type ChangesEnding, type FindEnding, type StoreClient, type StoreClientOptions, type WholeEnding, type WriteOptions } from "./client.js";
+export { createStoreClient, type CallOptions, type ChangesEnding, type FindEnding, type FollowOptions, type FollowPart, type StoreClient, type StoreClientOptions, type WholeEnding, type WriteOptions } from "./client.js";
 export type { StoreOperation, WriteOperation } from "./store-operations.js";

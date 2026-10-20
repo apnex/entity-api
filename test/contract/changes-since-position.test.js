@@ -40,7 +40,7 @@ async function setup(t, { count = 5, historyMs = 60_000, evidence: given = nodeE
 	let arrived = 0;
 	const evidence = (delivery) => { arrived++; return given(delivery); };
 	const store = {
-		...Object.fromEntries(["create", "update", "delete", "read", "find", "historyBound", "checkRepeat"].map((m) => [m, (...a) => opened.store[m](...a)])),
+		...Object.fromEntries(["create", "update", "delete", "read", "find", "historyBound", "follow", "waitForChange", "checkRepeat"].map((m) => [m, (...a) => opened.store[m](...a)])),
 		changes(input) {
 			const n = ++pages;
 			before[n]?.(input);
