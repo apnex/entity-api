@@ -33,13 +33,20 @@ test("a change's time is the store's time, to the millisecond, whatever the call
 	assert.equal(later.entity.changed.at, "2026-10-09T10:00:00.001Z", "and never earlier than a change already made");
 });
 
-test("a deleted entity reads as absent remotely, while the change log keeps each change's time and writer", async (t) => {
+test("a deleted entity reads as absent remotely, while the change log keeps each change's time and writer within the history bound and compacts expired changes into base", async (t) => {
 	const { clients: { alice, bob }, storage, setTime } = await served(t);
 	answerOf(await within(alice.create(note("alpha"))));
-	setTime(T0 + 60_000);
+	setTime(T0 + 30_000);
 	answerOf(await within(alice.delete({ target: { kind: "note", name: "alpha" } })));
 	assert.deepEqual(answerOf(await within(bob.read({ target: { id: "e1.1" } }))), { position: 2, entity: null });
 	assert.deepEqual(answerOf(await within(bob.read({ target: { kind: "note", name: "alpha" } }))), { position: 2, entity: null });
 	const changes = storage.records().filter((r) => r.type === "change");
-	assert.deepEqual(changes.map((c) => [c.position, c.at, c.writer]), [[1, "2026-10-09T10:00:00.000Z", "alice"], [2, "2026-10-09T10:01:00.000Z", "alice"]]);
+	assert.deepEqual(changes.map((c) => [c.position, c.at, c.writer]), [[1, "2026-10-09T10:00:00.000Z", "alice"], [2, "2026-10-09T10:00:30.000Z", "alice"]]);
+	setTime(T0 + 60_000);
+	answerOf(await within(alice.create(note("beta"))));
+	assert.deepEqual(storage.records().map((r) => [r.type, r.position, r.at]), [
+		["base", 1, "2026-10-09T10:00:00.000Z"],
+		["change", 2, "2026-10-09T10:00:30.000Z"],
+		["change", 3, "2026-10-09T10:01:00.000Z"],
+	]);
 });
