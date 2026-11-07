@@ -86,9 +86,12 @@ export async function openTopology(options = {}) {
 		};
 	};
 	const timers = { holdTimeMs: 0 };
+	const identityAdmission = options.identityAdmission ?? {
+		evaluate: async () => ({ decision: "allow", authorizationAssociation: { mode: "unauthenticated" } }),
+	};
 	const hosts = new Map(HOSTS.map((id) => [id, createNode({
 		nodeId: id, listen: { transportRef: "listen" }, capacity: { maxSessions: 32, maxPendingHandshakes: 32 }, timers, disposition: { debounceMs: 0 },
-	}, { clock: agpClock, transport: port(id, true, []) })]));
+	}, { clock: agpClock, transport: port(id, true, []), identityAdmission })]));
 	for (const node of hosts.values()) await node.start();
 	const hostNodes = new Map([...hosts].map(([id, node]) => [id, options.wrapHostNode ? options.wrapHostNode(node, id) : node]));
 
@@ -101,7 +104,7 @@ export async function openTopology(options = {}) {
 		if (callers.has(name)) return callers.get(name);
 		const node = createNode({ nodeId: name, capacity: { maxSessions: 4, maxPendingHandshakes: 4 }, timers, disposition: { debounceMs: 0 }, peers: HOSTS.map((h) => ({
 			adjacencyId: h, expectedNodeId: h, transportRef: h, reconnect: { initialDelayMs: 10, maximumDelayMs: 10 },
-		})) }, { clock: agpClock, transport: port(name, false, HOSTS) });
+		})) }, { clock: agpClock, transport: port(name, false, HOSTS), identityAdmission });
 		const calls = [];
 		const endings = [];
 		const failures = [];

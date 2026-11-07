@@ -20,14 +20,14 @@ function dropping(plan) {
 	const dropped = [];
 	const wrap = (node) => new Proxy(node, {
 		get(target, name) {
-			if (name !== "send") { const v = Reflect.get(target, name); return typeof v === "function" ? v.bind(target) : v; }
+			if (name !== "send" && name !== "sendDirectPeer") { const v = Reflect.get(target, name); return typeof v === "function" ? v.bind(target) : v; }
 			return async (from, to, payload, options) => {
 				if (payload?.type === "end" && plan[payload.operation] > 0) {
 					plan[payload.operation]--;
 					dropped.push(payload);
 					return { messageId: `dropped-${dropped.length}` };
 				}
-				return target.send(from, to, payload, options);
+				return target[name](from, to, payload, options);
 			};
 		},
 	});

@@ -72,12 +72,12 @@ function gatedNode(node, gate) {
 					return handler(payload, context);
 				});
 			}
-			if (prop === "send") {
+			if (prop === "send" || prop === "sendDirectPeer") {
 				return (source, destination, payload, options) => {
 					if (payload?.type === "part") {
 						gate.parts++;
 						if (gate.deliverThenHold) {
-							const sent = target.send(source, destination, payload, options);
+							const sent = target[prop](source, destination, payload, options);
 							return new Promise((resolve, reject) => {
 								gate.pending.push({ payload, admit: () => sent.then(resolve, reject), refuse: (code) => reject(Object.assign(new Error(`refused by the test, ${code}`), { code })) });
 							});
@@ -91,13 +91,13 @@ function gatedNode(node, gate) {
 							return new Promise((resolve, reject) => {
 								gate.pending.push({
 									payload,
-									admit: () => target.send(source, destination, payload, options).then(resolve, reject),
+									admit: () => target[prop](source, destination, payload, options).then(resolve, reject),
 									refuse: (code) => reject(Object.assign(new Error(`refused by the test, ${code}`), { code })),
 								});
 							});
 						}
 					}
-					return target.send(source, destination, payload, options);
+					return target[prop](source, destination, payload, options);
 				};
 			}
 			const value = target[prop];

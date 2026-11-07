@@ -142,5 +142,47 @@ test("serving needs an open store, a writer naming and a policy: anything else i
 	await assert.rejects(serveStore({ ...good, nameWriter: "alice" }), TypeError);
 	await assert.rejects(serveStore({ ...good, policy: undefined }), TypeError);
 	await assert.rejects(serveStore({ ...good, evidence: "not a function" }), TypeError);
+	await assert.rejects(serveStore({ ...good, mode: "invalid-mode" }), TypeError);
+	await assert.rejects(serveStore({ ...good, minimumProtection: "invalid-protection" }), TypeError);
+	const unhandled = [];
+	const onUnhandled = (r) => unhandled.push(r);
+	process.on("unhandledRejection", onUnhandled);
+	try {
+		await assert.rejects(
+			serveStore({ ...good, get mode() { throw Object.assign(new Error("mode getter boom"), { p: Promise.reject(new Error("mode getter promise")) }); } }),
+			/mode getter boom/,
+		);
+		let capturedOptions;
+		const spyNode = {
+			expose: async (_endpoint, handler) => {
+				if (!capturedOptions) {
+					await handler(
+						{ operationCall: 1, type: "request", invocation: "1791540000000-0123456789abcdef", attempt: "1791540000000-0123456789abcdef.89abcdef", operation: "describe", input: {} },
+						{
+							delivery: {
+								correlationId: "1791540000000-0123456789abcdef.89abcdef",
+								source: { endpoint: "operation-call/replies", originNodeId: "alice" },
+								directPeer: { originNodeId: "alice", authorizationAssociation: { mode: "authenticated", issuer: "zorg-credential-issuer/v1", principal: "alice", instanceBinding: "inst-1" } },
+							},
+							signal: new AbortController().signal,
+						},
+					);
+				}
+				return { close: async () => {} };
+			},
+			sendDirectPeer: async (_from, _to, _payload, opts) => {
+				capturedOptions = opts;
+				return { messageId: "m1" };
+			},
+		};
+		const authServing = await serveStore({ ...good, node: spyNode, service: "authstore", mode: "authenticated", minimumProtection: "integrity" });
+		assert.equal(authServing.served, true);
+		assert.equal(capturedOptions?.minimumProtection, "integrity");
+		assert.equal(capturedOptions?.target?.authorizationAssociation?.mode, "authenticated");
+		await authServing.server.close();
+	} finally {
+		process.off("unhandledRejection", onUnhandled);
+	}
+	assert.deepEqual(unhandled, []);
 	assert.deepEqual(hostExports(topology), []);
 });

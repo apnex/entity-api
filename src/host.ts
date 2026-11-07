@@ -36,6 +36,8 @@ import {
 	type DeliveryContext,
 	type Description,
 	type EvidenceFunction,
+	type HostMinimumProtection,
+	type HostMode,
 	type HostRefusal,
 	type JsonValue,
 	type OperationContext,
@@ -108,6 +110,10 @@ export interface StoreServerOptions {
 	readonly maxFollows?: number;
 	/** The clock port operation-call's host keeps its liveness and its alive on (EM11); operation-call's own when absent. */
 	readonly clock?: CallClock;
+	/** Required direct-peer authorization association mode forwarded to `createOperationHost` (`"unauthenticated"` when absent; zorg's D75). */
+	readonly mode?: HostMode;
+	/** Minimum transport protection on `node.sendDirectPeer` replies forwarded to `createOperationHost` (zorg's D75). */
+	readonly minimumProtection?: HostMinimumProtection;
 }
 
 /** The host's `maxFollows` when the application gives none (EM18). */
@@ -260,8 +266,32 @@ function result(outcome: StoreOutcome<unknown>): OperationResult {
 /** Serves a store's operations under a name, each at its own endpoint, or gives operation-call's refusal of the name. */
 export async function serveStore(options: StoreServerOptions): Promise<StoreServing> {
 	if (options === null || typeof options !== "object") throw new TypeError("serveStore needs { node, service, store, nameWriter, policy }");
-	const { node, service, store, nameWriter, policy, evidence, clock } = options;
-	const followLimit = checkMaxFollows(options.maxFollows);
+	let node: StoreServerOptions["node"];
+	let service: StoreServerOptions["service"];
+	let store: StoreServerOptions["store"];
+	let nameWriter: StoreServerOptions["nameWriter"];
+	let policy: StoreServerOptions["policy"];
+	let evidence: StoreServerOptions["evidence"];
+	let maxFollows: StoreServerOptions["maxFollows"];
+	let clock: StoreServerOptions["clock"];
+	let mode: StoreServerOptions["mode"];
+	let minimumProtection: StoreServerOptions["minimumProtection"];
+	try {
+		node = options.node;
+		service = options.service;
+		store = options.store;
+		nameWriter = options.nameWriter;
+		policy = options.policy;
+		evidence = options.evidence;
+		maxFollows = options.maxFollows;
+		clock = options.clock;
+		mode = options.mode;
+		minimumProtection = options.minimumProtection;
+	} catch (error) {
+		observePromises(error);
+		throw error;
+	}
+	const followLimit = checkMaxFollows(maxFollows);
 	for (const method of ["create", "update", "delete", "read", "find", "historyBound", "changes", "follow", "waitForChange", "checkRepeat"] as const) {
 		if (!store || typeof store[method] !== "function") throw new TypeError(`serveStore needs an open entity store, offering ${method}`);
 	}
@@ -272,6 +302,8 @@ export async function serveStore(options: StoreServerOptions): Promise<StoreServ
 		service,
 		...(evidence === undefined ? {} : { evidence: typeof evidence === "function" ? plainEvidence(evidence) : evidence }),
 		...(clock === undefined ? {} : { clock }),
+		...(mode === undefined ? {} : { mode }),
+		...(minimumProtection === undefined ? {} : { minimumProtection }),
 	});
 	if (!opening.opened) return { served: false, refusal: opening.refusal };
 	const host = opening.host;
