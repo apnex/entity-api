@@ -1,6 +1,6 @@
 {
   "name": "@apnex/entity-api",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Make an entity store reachable by name, so a remote caller can rely on exactly what a local one can.",
   "license": "MIT",
@@ -11,7 +11,7 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=24"
+    "node": ">=22"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -31,13 +31,13 @@
     "docs:check": "tools/check-docs.sh"
   },
   "dependencies": {
-    "@agp/node": "file:../agp/packages/node",
-    "@apnex/entity-store": "file:../entity-store",
-    "@apnex/operation-call": "file:../operation-call",
-    "@apnex/shape-check": "file:../shape-check"
+    "@apnex/entity-store": "https://github.com/apnex/entity-store/releases/download/v0.1.0/apnex-entity-store-0.1.0.tgz",
+    "@apnex/operation-call": "https://github.com/apnex/operation-call/releases/download/v0.1.0/apnex-operation-call-0.1.0.tgz",
+    "@apnex/shape-check": "https://github.com/apnex/shape-check/releases/download/v0.1.0/apnex-shape-check-0.1.0.tgz"
   },
   "devDependencies": {
     "@agp/core": "file:../agp/packages/core",
+    "@agp/node": "file:../agp/packages/node",
     "@agp/transport-loopback": "file:../agp/packages/transport-loopback",
     "@types/node": "^24.0.0",
     "typescript": "5.9.3"

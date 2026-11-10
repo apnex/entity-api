@@ -9,9 +9,9 @@ Its contract tests run entity-store's shared contract suite against a store call
 - `CONTRACT.md` - what a consumer can depend on, one capability per row.
 - `docs/DECISIONS.md` - the rulings about this component.
 
-It belongs to a component set first composed by zorg (`apnex/zorg`), and is private until its first working code.
+It belongs to a component set first composed by zorg (`apnex/zorg`), and is released only by its own CI, as a tarball attached to a GitHub release with its SHA-512 beside it, which a consumer names in its `package.json`: `https://github.com/apnex/entity-api/releases/download/v0.1.0/apnex-entity-api-0.1.0.tgz` for `0.1.0`.
 
-It depends on `@apnex/entity-store`, `@apnex/operation-call` and `@agp/node` through `file:` links to checkouts beside it, and its tests on `@agp/core` and `@agp/transport-loopback` the same way.\
+It depends on `@apnex/entity-store`, `@apnex/operation-call` and `@apnex/shape-check` through their release files, and takes AGP's types only, from `@agp/node`, `@agp/core` and `@agp/transport-loopback` in its development dependencies, `file:` links to an AGP checkout beside it.\
 Each such link installs none of its package's own dependencies, so each checkout must be installed and built first, since no `dist/` is committed.
 
 To run the tests from clean checkouts:

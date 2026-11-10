@@ -1,8 +1,8 @@
 ---
-id: unminted
+id: C6
 category: component
 title: entity-api - an entity store reached by name, with its guarantees intact
-status: draft
+status: active
 hydrate-when: An application must use an entity store it does not host, and must not lose the store's guarantees across the network
 sovereignty: internal
 supersedes: []
@@ -12,8 +12,8 @@ related: [C0, A3]
 # entity-api
 
 The contract of record for entity-api: what a consumer can depend on, written before any consumer's architecture so that it states the whole offer.\
-It also carries the fields of a mission-kit registry entry, and that entry is generated from this file when the component is filed, never written as a second copy.\
-The registry id is unminted on purpose; one is minted only when the entry is admitted to the registry.
+It also carries the fields of a mission-kit registry entry, and that entry is generated from this file, never written as a second copy.\
+Admitted to mission-kit's component registry as `C6`, its first release `0.1.0` (`docs/DECISIONS.md` `D3`); its frontmatter is the entry's.
 
 ---
 
@@ -63,11 +63,11 @@ The host half only makes sense beside a store: the system running it contains th
 
 ## Reference
 
-This repository, `apnex/entity-api`, private until its first working code is certified.\
+This repository, `apnex/entity-api`, and its package `@apnex/entity-api`, released only by its own CI as a tarball attached to a GitHub release, drafted, verified and then published (`.github/workflows/release.yml`).\
 The package `@apnex/entity-api` exports `serveStore`, the host half, and `createStoreClient`, the client half, as `export-map.json` records.\
 `StoreServerOptions` on `serveStore` accepts optional `mode?: "unauthenticated" | "authenticated"` and `minimumProtection?: "none" | "integrity" | "confidentiality-and-integrity"` (read once inside a guarded property access with `observePromises` on any thrown value before rethrowing, and forwarded unchanged - omitting `undefined` - to `operation-call`'s `createOperationHost`, which validates the enum values and defaults, zorg's `D59` to `D61`, `D75`, `BL29`).\
 `changes-since-position` is served by both halves, the host serving `changes` and the client offering `changesPage` and the whole `changes`, and `follow-narrowed-set` and `follow-closes-with-call` by both halves, the host serving `follow` in parts under its `maxFollows` and the client offering `follow`, each built in zorg's Delta 4 under `D64` (zorg's target, `EM16` and `EM18`); `dated-local-view` is deferred under zorg's `D64`, which keeps it parked when it unparks the rest of following (`D15`).\
-It depends on `@apnex/entity-store`, `@apnex/operation-call`, `@apnex/shape-check` and `@agp/node` through `file:` links, takes AGP's and entity-store's types only, and imports no module particular to one runtime.
+It depends on `@apnex/entity-store`, `@apnex/operation-call` and `@apnex/shape-check` through their release files and on `@agp/node` for development only, takes AGP's and entity-store's types only, and imports no module particular to one runtime.
 
 ---
 
