@@ -111,9 +111,19 @@ test("no source file reads a clock or randomness itself: they come through the p
 	}
 });
 
-test("the package depends on entity-store, operation-call, shape-check and AGP's node through file: links to checkouts beside it, and on nothing else at run time", () => {
-	assert.deepEqual(pkg.dependencies, { "@agp/node": "file:../agp/packages/node", "@apnex/entity-store": "file:../entity-store", "@apnex/operation-call": "file:../operation-call", "@apnex/shape-check": "file:../shape-check" });
+const validDepSpec = (name, spec) => spec === `file:../${name}` || new RegExp(`^https://github\\.com/apnex/${name}/releases/download/v0\\.\\d+\\.\\d+/apnex-${name}-0\\.\\d+\\.\\d+\\.tgz$`).test(spec);
+
+test("the package depends on entity-store, operation-call and shape-check (and AGP's node as a runtime or dev dependency) through file: links or pinned GitHub release URLs, and on nothing else at run time", () => {
+	const depKeys = Object.keys(pkg.dependencies ?? {}).sort();
+	assert.ok(
+		(depKeys.length === 3 && depKeys.join(",") === "@apnex/entity-store,@apnex/operation-call,@apnex/shape-check") ||
+		(depKeys.length === 4 && depKeys.join(",") === "@agp/node,@apnex/entity-store,@apnex/operation-call,@apnex/shape-check" && pkg.dependencies["@agp/node"] === "file:../agp/packages/node"),
+	);
+	for (const comp of ["entity-store", "operation-call", "shape-check"]) {
+		assert.ok(validDepSpec(comp, pkg.dependencies[`@apnex/${comp}`]), comp);
+	}
 	for (const [name, spec] of Object.entries(pkg.devDependencies)) {
-		if (name.startsWith("@agp/") || name.startsWith("@apnex/")) assert.match(spec, /^file:\.\.\//, `${name} is linked from a checkout beside this one`);
+		if (name.startsWith("@agp/")) assert.match(spec, /^file:\.\.\//, `${name} is linked from a checkout beside this one`);
+		else if (name.startsWith("@apnex/")) assert.ok(validDepSpec(name.slice(7), spec), `${name} is linked from a checkout or pinned release`);
 	}
 });
